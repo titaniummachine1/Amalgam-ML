@@ -32,10 +32,15 @@ per-tick expected accel (pure input accel, friction-cancelled) + 0..1 value head
   (4729 vs 150 ms/step → 31h vs 1h). Train FP32, export INT8. Killed 2026-09-29, zero progress lost
   (checkpoint-per-best-eval design; fp16 job died in epoch 0, nothing written).
 
-## In flight
-- `train_all_fp32.py`: GRU(14,96), all 9 classes, class one-hot + per-class speed norm,
-  class-change series splits, FP32, 10 eps → `gru_all_fp32.pt`. (~1h, 4 threads; 6 oversubscribes.)
-- Next: hitbox-finetune winner → hit-rate eval (per-class!) → threat/FOV inputs → value head → int8 C++ export.
+## In flight — DONE 2026-09-29
+- `train_all_fp32.py`: GRU(14,96) all-class → `gru_all_v5.pt` (eval 30.23). Superceded.
+- Nine specialists (warm-started, horizon-weighted): scout/sniper/soldier/demo/
+  heavy/pyro/spy/engy saved; medic skipped (too few windows). Sniper 5.89 best.
+- Dense-66 soldier `gru_soldier_dense66.pt` (loss 22.31) = CURRENT CHAMPION.
+  Hit-rate: 97.0/82.5/58.2/27.2/12.4 vs coast 92.4/70.7/50.8/28.1/10.9.
+- C++ inference written (BehaviorPrediction.cpp, int8 weights in-repo), NOT WIRED.
+  Verified: gates exact, int8 hit-rate safe, rounding documented.
+- Next: hit-rate re-checks per specialist → value head on champion → RunTick wiring.
 
 ## Machine notes
 - CPU i7-4900MQ 4c/8t, 16GB RAM. torch 2.12.1+cpu, py3.14. Use torch.set_num_threads(4).

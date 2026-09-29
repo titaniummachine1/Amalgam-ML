@@ -108,8 +108,26 @@ class CBehaviorPrediction
 {
 public:
 	void Reset(int iEntIndex = -1);
-	// TODO(ml): Warmup(hidden, history), PredictStep(static ctx, dynamic feats) -> BehaviorPrediction_t
-	// TODO(ml): native int8 GRU forward, no ONNX runtime in-process (15ms budget for 132-step rollout)
+	// Per-tick push of fresh server state for a tracked player (cheap, always on).
+	void PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass);
+	// Roll out up to iTicks ahead (cap 132). Writes per-step accel (ego hu/s^2)
+	// into pOut, returns steps written. Confidence is 1.0 until the value head
+	// lands (phase 2); gate on policy only until then.
+	// m_iBudget = how many ranked targets get full prediction per tick.
+	int Predict(int iEntIndex, int iTicks, BehaviorPrediction_t* pOut, int iMaxOut);
+	int m_iBudget = 1;
+
+private:
+	struct TargetState;
+	std::unordered_map<int, TargetState> m_mTargets;
+	bool m_bWeightsReady = false;
+	float m_Wih[3 * 96 * 14] = {};
+	float m_Whh[3 * 96 * 96] = {};
+	float m_Bih[3 * 96] = {};
+	float m_Bhh[3 * 96] = {};
+	float m_HeadW[2 * 96] = {};
+	float m_HeadB[2] = {};
+	void EnsureWeights();
 };
 
 ADD_FEATURE(CBehaviorPrediction, BehaviorPrediction);

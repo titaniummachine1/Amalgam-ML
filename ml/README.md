@@ -44,6 +44,19 @@ vs v4 96.8/82.3/59.0/28.2/12.7 @100/200/300/500/1000ms.
 v4 beats v3ii everywhere incl. 500ms. Binary hit labels fall out free for the
 value head (inside-AABB at intercept horizon).
 
+Dense-66 soldier (phase 5, gru_soldier_dense66.pt, loss 22.31): per-tick loss over
+ALL 66 ticks, time weight w(t)=exp((t-66)/33) — exponential difficulty scaling,
+anchored w(66)=1, w(1)=0.14. Measured coast difficulty growth: err=0.47*t^1.42.
+Hit-rate: 97.0/82.5/58.2/27.2/12.4 vs coast 92.4/70.7/50.8/28.1/10.9 —
+beats coast 4/5, 500ms still -0.9pp. INT8 weights preserve hit-rate.
+Nine specialists (warm-started, horizon-weighted): sniper 5.89 leads; spy 57.23
+hardest (cloak behavior unobservable). Medic skipped (too few windows).
+
+C++ inference (BehaviorPrediction.cpp, NOT YET WIRED): GRU(14,96) int8-dequant
+forward, training-faithful featurization (backward-diff vel, eye fallback,
+per-class MAXV). Gate math exact 2.4e-07; int8 hit-rate proven; recurrent fp32
+rounding documented, in-game verification required. Value head + RunTick wiring next.
+
 Context group (phase 5): 32 static feats = multi-timescale EMA accel/vel/speed
 (tau 0.25/1/4s, hard-reset on death/class/teleport gaps — never hold stale
 history) + 3 opponent slots (ego dir, dist, present) + yaw-rate heuristic accel.
