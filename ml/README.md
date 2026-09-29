@@ -32,6 +32,15 @@ Rollout position error hu @100/200/300/500/1000ms (finetuned v3, clean labels):
 coast 4.9/11.6/22.3/47.0/122.3 vs model 4.0/9.1/17.2/35.8/82.3 — model wins
 everywhere, gap widens at high curvature + long horizons.
 
+Labels v3 (current): PURE INPUT accel — TF2 ground friction cancelled
+(A_in = dV/dt + vhat*max(|v|,100)*4; air 2D unchanged), so the net learns
+behavior (wishdir intent), not physics. Sim owns friction/gravity.
+Windows identical to v2 (cache: only Y recomputed).
+
+Note: single-step wMSE can look good while rollout lags coast (exposure bias) —
+always judge by autoregressive multi-horizon position error. Finetune with
+differentiable rollout loss before comparing.
+
 ## Next
 
 - Train policy on v3 (pure-input) labels.
