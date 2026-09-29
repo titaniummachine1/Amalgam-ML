@@ -44,6 +44,17 @@ vs v4 96.8/82.3/59.0/28.2/12.7 @100/200/300/500/1000ms.
 v4 beats v3ii everywhere incl. 500ms. Binary hit labels fall out free for the
 value head (inside-AABB at intercept horizon).
 
+Context group (phase 5): 32 static feats = multi-timescale EMA accel/vel/speed
+(tau 0.25/1/4s, hard-reset on death/class/teleport gaps — never hold stale
+history) + 3 opponent slots (ego dir, dist, present) + yaw-rate heuristic accel.
+Single-step wMSE: raw+ctx 16.46 beats v4-base 16.79; residual+ctx 16.82.
+ROLLOUT hit-rate verdict: rawctx 96.8/79.3/45.1/23.8/9.4, resctx
+96.8/81.8/47.1/25.1/10.7 — BOTH LOSE to v4 (96.8/82.3/59.0/28.2/12.7).
+Lessons: (a) residual-over-heuristic loses everywhere — raw accel target stays;
+(b) static-broadcast context overfits single-step and poisons rollout; context
+must enter via init-hidden/FiLM or per-step features, not identical copies at
+every warmup step. Champion stays gru64_v4.pt.
+
 Labels v3 (current): PURE INPUT accel — TF2 ground friction cancelled
 (A_in = dV/dt + vhat*max(|v|,100)*4; air 2D unchanged), so the net learns
 behavior (wishdir intent), not physics. Sim owns friction/gravity.
