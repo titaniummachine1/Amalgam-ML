@@ -28,14 +28,18 @@
 //   approach always kept so dodge reactions survive), movement-weighted fitness,
 //   teleport-split. Metric that matters: multi-horizon POSITION error
 //   (100/200/300/500/1000ms), not just accel MSE.
-// Memory architecture (two tiers, both per-tracked-player, reset on death /
-//   target-switch / class-change / teleport — never leak stale history):
-//   STM (short-term, rich, 2s ring = 132 ticks): pos, vel, flags, eye, class,
-//     accel-pred, accel-actual, confidence per tick. Warmup consumes the tail.
-//     Compact: fixed ring, O(1) push, evict beyond 2s. Valuable-per-byte because
-//     the policy's warmup reads it every rollout.
-//   LTM (long-term, per-ENGAGEMENT not lifetime): fixed-size accumulator (~16 floats,
-//     O(1) update per tick) answering "how did we do + how to adjust":
+// Memory architecture (ONE ring, not two tiers — verified cheap enough):
+//   Per-player STM ring: 2s (132 ticks) x 15 floats (pos3, vel3, flags, eye2,
+//   class, accel-pred2, accel-actual2, conf) x fp32 = ~8KB/player, ~250KB for
+//   32 players. Tracked for EVERYONE (needed for FOV/threat inputs anyway).
+//   FULL prediction (warmup + rollout + value) runs ONLY on the selected target,
+//   constantly re-predicted (fresh input for release gating + splash shrink).
+//   Everyone else: ring maintenance only, no inference. No PC melting.
+//   Reset ring on death / class-change / teleport — never leak stale history.
+//   Warmup length under test (22/33/66-tick ablation on frozen champion);
+//   2s hardcoded unless ablation says otherwise.
+// LTM (long-term, per-ENGAGEMENT not lifetime): fixed-size accumulator (~16 floats,
+//   O(1) update per tick) answering "how did we do + how to adjust":
 //     v1 observable-only (buildable offline, no predictions needed): strafe bias
 //       (L/R tendency), reversal rate, speed/accel variance, airtime frac,
 //       engagement length, dodge-reaction count (accel onset within 300ms of
