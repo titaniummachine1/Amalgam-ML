@@ -47,6 +47,11 @@ differentiable rollout loss before comparing.
 
 ## Next
 
+- Correction-history inputs (phase 3, in progress): per-sample past 1-step
+  prediction errors (absolute pred pos vs absolute actual, heading-ego frame) +
+  past predicted accels, on-grid lags {4,8,12,16,24,32} from champion rollout —
+  `build_corr1.py`, 99.6% coverage. Retraining with 29 inputs (`train_corr1.py`).
+  Lesson: normalize err features to unit scale (hu values dominate grads otherwise).
 - Train policy on v3 (pure-input) labels.
 - Threat/FOV feature group from `.proj.csv` (dodge-keep rule, 90° FOV + 1s memory).
 - Tiny value head: P(rollout final pos aligns) at min(T_limit, T_intercept).
