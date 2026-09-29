@@ -60,6 +60,13 @@
 // Label discipline: PURE INPUT acceleration only. Friction/gravity and all other
 //   non-input forces are cancelled in the label (ground: A_in = dV/dt + vhat*max(|v|,100)*4;
 //   air 2D: A_in = dV/dt). Simulation owns physics; policy learns behavior (1-2s context).
+// Scope boundary (small, on purpose): rings for ALL players at ALL times
+//   (32 or 100+ — ~8KB each, always affordable). Amalgam owns ALL viability
+//   logic (teammates, dormancy, ignore lists, FOV) via its existing selection.
+//   This module outputs exactly two things per predicted target: predicted accel
+//   (policy) + P(successful hit) (value). The existing menu hit-chance threshold
+//   gates autoshoot below it — no new gating logic here. Zero tracking latency:
+//   rings are always warm, hidden states cached, confidence decides shoot/hold.
 // Multi-target budget (config var, default 1): ranked target list reuses the
 //   existing aimbot target selection (FOV/dist/priority). Target #1 predicted
 //   every tick; #2/#3 at reduced rate or on beefy PCs every tick.
