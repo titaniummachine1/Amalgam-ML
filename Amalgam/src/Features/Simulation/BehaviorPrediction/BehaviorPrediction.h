@@ -60,6 +60,10 @@
 // Label discipline: PURE INPUT acceleration only. Friction/gravity and all other
 //   non-input forces are cancelled in the label (ground: A_in = dV/dt + vhat*max(|v|,100)*4;
 //   air 2D: A_in = dV/dt). Simulation owns physics; policy learns behavior (1-2s context).
+// Prediction runs ALWAYS, not only when firing: the would-be target (same
+//   targeting logic) is predicted constantly, so hiddens are warm, prediction
+//   history exists, and the firing solution is ready the instant the user IS
+//   prepared to shoot. Idle prediction is pure profit (rings + cached hiddens).
 // Scope boundary (small, on purpose): rings for ALL players at ALL times
 //   (32 or 100+ — ~8KB each, always affordable). Amalgam owns ALL viability
 //   logic (teammates, dormancy, ignore lists, FOV) via its existing selection.
