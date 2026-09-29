@@ -28,9 +28,13 @@ runtime contract.
 ## Results (eval, soldier-only)
 
 wMSE: coast 43.3 / yawrate 166 / GRU 16.3 (2.7x over coast).
-Rollout position error hu @100/200/300/500/1000ms (finetuned v3, clean labels):
-coast 4.9/11.6/22.3/47.0/122.3 vs model 4.0/9.1/17.2/35.8/82.3 — model wins
-everywhere, gap widens at high curvature + long horizons.
+Rollout position error hu @100/200/300/500/1000ms, eval, by curvature band
+(v3ii = pure-input labels + rollout-loss finetune; gru64_v3ii.pt):
+all: coast 4.9/11.6/22.3/47.0/122.3 vs model 4.0/9.0/17.1/35.7/81.5
+p95 (sharpest): coast 6.2/13.0/22.3/41.0/90.7 vs model 5.1/10.0/16.7/31.3/69.6
+Model wins everywhere; gap widens with horizon + curvature. v2-finetuned (total
+accel) tied v3ii on rollout, but v3 labels are the correct formulation (behavior
+vs physics separated), so v3 is the line going forward.
 
 Labels v3 (current): PURE INPUT accel — TF2 ground friction cancelled
 (A_in = dV/dt + vhat*max(|v|,100)*4; air 2D unchanged), so the net learns
