@@ -60,6 +60,15 @@
 // Label discipline: PURE INPUT acceleration only. Friction/gravity and all other
 //   non-input forces are cancelled in the label (ground: A_in = dV/dt + vhat*max(|v|,100)*4;
 //   air 2D: A_in = dV/dt). Simulation owns physics; policy learns behavior (1-2s context).
+// Multi-target budget (config var, default 1): ranked target list reuses the
+//   existing aimbot target selection (FOV/dist/priority). Target #1 predicted
+//   every tick; #2/#3 at reduced rate or on beefy PCs every tick.
+//   Affordability trick: cache GRU hidden per tracked target across frames and
+//   update incrementally (1 step/tick from the ring). Full re-warmup ONLY on
+//   target switch / death / teleport / class change. Per-target per-frame cost
+//   then ~= rollout only (~2-4ms int8), NOT warmup+rollout. 3 targets ~= 10-15ms.
+//   Weak PCs: budget 1 (selected target only). Beefy PCs: budget 2-3, better
+//   target-switch responsiveness + pre-computed firing solutions.
 // Hook points (not wired yet):
 //   - CMovementSimulation::RunTick: replace/augment m_flAverageYaw input with rollout.
 //   - CAimbotProjectile: skip release when rollout confidence < threshold.
