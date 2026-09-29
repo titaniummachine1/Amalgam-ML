@@ -28,6 +28,15 @@
 //   approach always kept so dodge reactions survive), movement-weighted fitness,
 //   teleport-split. Metric that matters: multi-horizon POSITION error
 //   (100/200/300/500/1000ms), not just accel MSE.
+// Correction history (phase 3): every tick predicts 1-2s ahead (rollout until
+//   intercept T or timeout). Each future tick records, from every past prediction:
+//   age-k predicted position + predicted accel. At tick T the policy sees, about NOW,
+//   the distribution of what past selves predicted (mean/lag-k errors = self-correction
+//   signal). Training: sequential segments with prediction buffer (scheduled sampling),
+//   loss = per-tick position divergence + final endpoint divergence.
+// Label discipline: PURE INPUT acceleration only. Friction/gravity and all other
+//   non-input forces are cancelled in the label (ground: A_in = dV/dt + vhat*max(|v|,100)*4;
+//   air 2D: A_in = dV/dt). Simulation owns physics; policy learns behavior (1-2s context).
 // Hook points (not wired yet):
 //   - CMovementSimulation::RunTick: replace/augment m_flAverageYaw input with rollout.
 //   - CAimbotProjectile: skip release when rollout confidence < threshold.
