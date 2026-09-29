@@ -28,12 +28,31 @@
 //   approach always kept so dodge reactions survive), movement-weighted fitness,
 //   teleport-split. Metric that matters: multi-horizon POSITION error
 //   (100/200/300/500/1000ms), not just accel MSE.
+// Memory architecture (two tiers, both per-tracked-player, reset on death /
+//   target-switch / class-change / teleport — never leak stale history):
+//   STM (short-term, rich, 2s ring = 132 ticks): pos, vel, flags, eye, class,
+//     accel-pred, accel-actual, confidence per tick. Warmup consumes the tail.
+//     Compact: fixed ring, O(1) push, evict beyond 2s. Valuable-per-byte because
+//     the policy's warmup reads it every rollout.
+//   LTM (long-term, per-ENGAGEMENT not lifetime): fixed-size accumulator (~16 floats,
+//     O(1) update per tick) answering "how did we do + how to adjust":
+//     v1 observable-only (buildable offline, no predictions needed): strafe bias
+//       (L/R tendency), reversal rate, speed/accel variance, airtime frac,
+//       engagement length, dodge-reaction count (accel onset within 300ms of
+//       projectile entering 90deg FOV).
+//     v2 prediction-aware (needs live buffer / scheduled sampling): EMA of own
+//       past accel/position errors, calibration (predicted vs actual hit rate),
+//       per-horizon reliability. Feeds value head directly; FiLM-conditions policy.
+//   Scope rule: LTM covers the current battle with THIS player. Lifetime stats
+//   across matches are explicitly out of scope (memory explosion, no transfer).
 // Correction history (phase 3): every tick predicts 1-2s ahead (rollout until
 //   intercept T or timeout). Each future tick records, from every past prediction:
 //   age-k predicted position + predicted accel. At tick T the policy sees, about NOW,
 //   the distribution of what past selves predicted (mean/lag-k errors = self-correction
 //   signal). Training: sequential segments with prediction buffer (scheduled sampling),
 //   loss = per-tick position divergence + final endpoint divergence.
+//   (Frozen-champion corr features FAILED as static context: corr1 rollout collapse.
+//   Live-buffer only.)
 // Label discipline: PURE INPUT acceleration only. Friction/gravity and all other
 //   non-input forces are cancelled in the label (ground: A_in = dV/dt + vhat*max(|v|,100)*4;
 //   air 2D: A_in = dV/dt). Simulation owns physics; policy learns behavior (1-2s context).
