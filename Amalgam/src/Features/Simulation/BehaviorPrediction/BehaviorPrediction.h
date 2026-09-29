@@ -4,19 +4,30 @@
 // ML behavior prediction contract (branch: ml-behavior-prediction).
 // Independent of projectile-aim-improvements; combine later via gating.
 //
-// Model: single-rollout policy (MCTS with 1 simulation).
-//   Policy head: per-tick accel vector, rolled out autoregressively (GRU hidden carried).
-//   Value head : 0..1 confidence that THIS rollout is exactly what's gonna happen,
-//                trained on hindsight rollout-match (endpoint within X hu of truth),
-//                NOT aggregated from per-tick formulas.
+// Model: single-rollout policy (MCTS with 1 simulation). GRU-64, ~15k params, int8 CPU.
+//   Policy head: per-tick 2D accel vector (horizontal; vertical stays in physics),
+//                rolled out autoregressively (GRU hidden carried, no history re-encode).
+//   Value head : TINY (few hundred params, NOT a chess-like evaluator). Sees warmup
+//                hidden + rollout endpoint stats only. Outputs 0..1 = P(predicted final
+//                position aligns with actual future) at min(sim time limit, intercept T).
+//                Trained on hindsight rollout-match, NOT aggregated per-tick formulas.
 //   Warmup : feed ~1s (66 ticks) of real MoveData history -> hidden state.
 //   Rollout: per tick, PredictStep returns expected acceleration for THIS tick.
+// Simulation assumptions (frozen world):
+//   ONLY the simulated player and OUR projectile move. Everything else frozen.
+//   Projectile enters the player's knowledge iff within history or inside their
+//   90 deg FOV during the prediction window (incl. seen-within-1s memory).
 // Output contract:
 //   m_vAccel      - expected acceleration vector this tick, egocentric yaw frame,
 //                   scaled by class max speed (integrate via existing RunTick/ProcessMovement).
 //   m_flConfidence - 0..1. Low = do not trust rollout (evasion / unseen regime).
 //                    Consumers (AimbotProjectile release logic, splash radius shrink)
 //                    gate on this: hold shot / shrink radius when confidence is low.
+// Training data: SourceTV demos (server-authoritative trajectories) -> SQLite store
+//   (Turso-compatible file), AFK sliced bidirectionally (+-2s still => drop, 1s onset
+//   approach always kept so dodge reactions survive), movement-weighted fitness,
+//   teleport-split. Metric that matters: multi-horizon POSITION error
+//   (100/200/300/500/1000ms), not just accel MSE.
 // Hook points (not wired yet):
 //   - CMovementSimulation::RunTick: replace/augment m_flAverageYaw input with rollout.
 //   - CAimbotProjectile: skip release when rollout confidence < threshold.
