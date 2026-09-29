@@ -36,6 +36,14 @@ Model wins everywhere; gap widens with horizon + curvature. v2-finetuned (total
 accel) tied v3ii on rollout, but v3 labels are the correct formulation (behavior
 vs physics separated), so v3 is the line going forward.
 
+Hitbox loss (phase 4, current champion v4 = gru64_v4.pt): AABB 48x48 Chebyshev,
+L = ln((err+1)/25) inside (log reward, steep near perfect), L = 4*((err-24)/24)^2
+outside (quadrupling penalty). Hit-rate @24hu:
+coast 92.2/70.5/50.9/28.0/11.5 vs v3ii 96.7/82.2/58.1/27.0/12.5
+vs v4 96.8/82.3/59.0/28.2/12.7 @100/200/300/500/1000ms.
+v4 beats v3ii everywhere incl. 500ms. Binary hit labels fall out free for the
+value head (inside-AABB at intercept horizon).
+
 Labels v3 (current): PURE INPUT accel — TF2 ground friction cancelled
 (A_in = dV/dt + vhat*max(|v|,100)*4; air 2D unchanged), so the net learns
 behavior (wishdir intent), not physics. Sim owns friction/gravity.
