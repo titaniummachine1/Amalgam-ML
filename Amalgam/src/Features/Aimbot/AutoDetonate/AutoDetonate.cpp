@@ -85,6 +85,10 @@ bool CAutoDetonate::CheckEntity(CBaseEntity* pEntity, CTFPlayer* pLocal, CTFWeap
 	// CEntitySphereQuery actually does a box test so we need to make sure the distance is less than the radius first
 	Vec3 vPos; pEntity->m_Collision()->CalcNearestPoint(vOrigin, &vPos);
 	float flRadiusSqr = powf(flRadius, 2);
+	// Ported from Rijin auto_detonator.cpp: flare edge detonations are often wasted,
+	// require 0.85 * radius^2 for flares only. Stickies keep exact radius (ramp already conservative).
+	if (pProjectile && pProjectile->GetClassID() == ETFClassID::CTFProjectile_Flare)
+		flRadiusSqr *= 0.85f;
 	if (vOrigin.DistToSqr(vPos) > flRadiusSqr)
 		return false;
 
