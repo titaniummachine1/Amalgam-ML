@@ -69,6 +69,20 @@
 //   then ~= rollout only (~2-4ms int8), NOT warmup+rollout. 3 targets ~= 10-15ms.
 //   Weak PCs: budget 1 (selected target only). Beefy PCs: budget 2-3, better
 //   target-switch responsiveness + pre-computed firing solutions.
+// Confidence-gated early prediction: a newly selected target does NOT wait for a
+//   full 2s warmup. Ablation shows 0.33s warmup ~= 1s hit-rate, so: start rolling
+//   out as soon as the ring has ~22 ticks, and let the VALUE head decide — high
+//   confidence = shootable now, low confidence = keep warming up. Warmup length
+//   is a latency/accuracy knob driven by confidence, not a fixed gate.
+// Prediction count follows aimbot selection: however many targets the aimbot
+//   tracks (up to entity limit), rings exist for all of them for free; full
+//   prediction runs on the top-N by rank/budget. No separate target list.
+// Sim-feedback loop: every rollout on a tracked target appends to ITS prediction
+//   history (predicted pos/accel per future tick). When those ticks arrive, the
+//   observed-vs-predicted deltas become live correction input (phase-3 scheduled
+//   sampling in training; prediction buffer at runtime). Predicting a target
+//   literally improves its future predictions — another reason to spend budget
+//   on the top-N rather than the top-1 only.
 // Hook points (not wired yet):
 //   - CMovementSimulation::RunTick: replace/augment m_flAverageYaw input with rollout.
 //   - CAimbotProjectile: skip release when rollout confidence < threshold.
