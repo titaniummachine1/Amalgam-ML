@@ -94,12 +94,18 @@ N = len(Xtr)
 best = 1e18
 OUT = os.path.join(D, 'gru_all_v5.pt')
 t_start = time.time()
+# fixed val-probe subset (single-step, fast): how-far-from-perfect signal mid-epoch
+probe_idx = np.random.RandomState(0).choice(len(Xev), 2048, replace=False)
+Xpb = torch.from_numpy(np.array(Xev[probe_idx]))
+Ypb = torch.from_numpy(np.array(Yev[probe_idx]))
+Wpb = torch.from_numpy(np.array(Wev[probe_idx])).view(-1, 1)
+LOG_EVERY = 200
 for ep in range(4):
     net.train()
     perm = np.random.permutation(N)
     batch_losses = []
     t0 = time.time()
-    for i in range(0, N, B):
+    for bi, i in enumerate(range(0, N, B)):
         idx = perm[i:i + B]
         xb = torch.from_numpy(np.array(Xtr[idx]))
         yb = torch.from_numpy(np.array(Ytr[idx]))
@@ -111,6 +117,22 @@ for ep in range(4):
         torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
         opt.step()
         batch_losses.append(l.item())
+        if (bi + 1) % LOG_EVERY == 0:
+            bl = np.array(batch_losses)
+            with torch.no_grad():
+                was_training = net.training
+                net.eval()
+                probe = float((((net(Xpb) - Ypb) ** 2) * Wpb).mean())
+                if was_training:
+                    net.train()
+            log({'type': 'batch', 'ep': ep, 'batch': bi + 1, 'of_batches': N // B,
+                 'train_mean': float(bl.mean()), 'train_std': float(bl.std()),
+                 'valprobe_singlestep': probe,
+                 'elapsed_min': round((time.time() - t_start) / 60, 1)})
+            with open(PROG, 'w') as f:
+                json.dump({'epoch': ep, 'of': 4, 'batch': bi + 1, 'best': best,
+                           'train_mean': float(bl.mean()), 'train_std': float(bl.std()),
+                           'valprobe': probe, 'done': False, 'ckpt': OUT}, f)
     bl = np.array(batch_losses)
     net.eval()
     with torch.no_grad():
