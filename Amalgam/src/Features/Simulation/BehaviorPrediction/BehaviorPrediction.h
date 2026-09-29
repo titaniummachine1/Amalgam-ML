@@ -4,7 +4,11 @@
 // ML behavior prediction contract (branch: ml-behavior-prediction).
 // Independent of projectile-aim-improvements; combine later via gating.
 //
-// Model: GRU(64) + FiLM static context -> accel + uncertainty heads (int8 C++ forward).
+// Model: single-rollout policy (MCTS with 1 simulation).
+//   Policy head: per-tick accel vector, rolled out autoregressively (GRU hidden carried).
+//   Value head : 0..1 confidence that THIS rollout is exactly what's gonna happen,
+//                trained on hindsight rollout-match (endpoint within X hu of truth),
+//                NOT aggregated from per-tick formulas.
 //   Warmup : feed ~1s (66 ticks) of real MoveData history -> hidden state.
 //   Rollout: per tick, PredictStep returns expected acceleration for THIS tick.
 // Output contract:
@@ -19,8 +23,8 @@
 //   - Splash radius: shrink proportional to (1 - confidence), replaces LC yaw-jitter heuristic.
 struct BehaviorPrediction_t
 {
-	Vec3 m_vAccel = {};      // expected acceleration this tick (world units/tick^2, egocentric)
-	float m_flConfidence = 1.f; // 0..1, 1 = fully trusted
+	Vec3 m_vAccel = {};      // policy head: expected acceleration this tick (world units/tick^2, egocentric)
+	float m_flConfidence = 1.f; // value head 0..1: this rollout is what's gonna happen. Gate release on it.
 };
 
 class CBehaviorPrediction
