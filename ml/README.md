@@ -65,6 +65,16 @@ stats): gated hit-rate @300ms: thr 0.5 → 80% coverage at 65% (base 60%);
 (under-confident at top, ~0% coverage above 0.7) — temperature scaling pending.
 Calibration roughly honest. Lesson 2: dense cache has 66 cols, horizons are
 [6,12,19,32,65] — first value run trained on wrong columns, retrained.
+
+Threat inputs + simulation (gru_threatsimB.pt): 6 threat feats/step (nearest
+hostile dist/speed/FOV/count/memory/tti), nearest hostile SIMULATED during
+rollout (linear advance, live dist/FOV/tti; cheap direction+distance only, no
+collision handling, projectile solver untouched). Frozen-threat (22.24) < sim
+(21.56) on loss. Hit-rate ALL: sim 97.8/87.4/60.0/27.4/12.5 vs frozen
+97.7/87.0/59.4/26.8/12.6 vs denseC 97.6/86.5/61.4/27.5/12.9 — sim best or tied
+everywhere except 300ms (denseC +1.4pp). THREAT-ACTIVE subset: coast collapses
+(5.3% @1000ms); sim leads (98.3/85.6/55.5/21.1/6.3). Constrained behavior is
+easier to predict — validating the design. Champion: sim on balance.
 Nine specialists (warm-started, horizon-weighted): sniper 5.89 leads; spy 57.23
 hardest (cloak behavior unobservable). Medic skipped (too few windows).
 
