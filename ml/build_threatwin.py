@@ -55,6 +55,21 @@ def team_map(demo_base):
     return {e: max(set(vs), key=vs.count) for e, vs in votes.items()}
 
 
+def load_players(demo_base):
+    """tick -> list[(ent, x, y, team)] alive rows, any class. For teammate slots."""
+    d = defaultdict(list)
+    with open(os.path.join(D, demo_base)) as fh:
+        for row in csv.DictReader(fh):
+            if row['life'] != '0':
+                continue
+            try:
+                d[int(row['tick'])].append((int(row['ent']), float(row['ox']),
+                                            float(row['oy']), int(row['team'])))
+            except (ValueError, KeyError):
+                continue
+    return d
+
+
 def build(tag):
     k = np.load(os.path.join(DS, tag + 'Bk.npz'))['K']
     sol = np.where(k[:, 3] == 3)[0]
@@ -62,6 +77,7 @@ def build(tag):
     N = len(Ks)
     TW = np.zeros((N, 66, 6), dtype=np.float32)
     TS = np.zeros((N, 66, 5), dtype=np.float32)  # raw sim state: relpos ego(2), vel ego(2), present(1)
+    TM = np.zeros((N, 66, 3, 4), dtype=np.float32)  # teammate slots: relpos world(2), dist(1), present(1)
     # defaults = no-info (match build_ext.py inst default)
     TW[:, :, 0] = 1.0
     TW[:, :, 5] = 1.0
@@ -75,6 +91,7 @@ def build(tag):
         demo_base = DID2CSV[did]
         proj = load_proj(demo_base)
         teams = team_map(demo_base)
+        plocs = load_players(demo_base)
         for ent, idxs in ent_groups:
             rows = con.execute(
                 'SELECT tick,ox,oy,eyey FROM ticks WHERE demo=? AND ent=? ORDER BY tick',
@@ -205,10 +222,27 @@ def build(tag):
                         TS[r, s, 0:2] = ReT @ np.array([rx, ry])
                         TS[r, s, 2:4] = ReT @ np.array([rvx, rvy])
                         TS[r, s, 4] = 1.0
-    np.savez_compressed(os.path.join(DS, tag + 'B_threatwin.npz'), TW=TW, TS=TS)
+                    # teammate slots: up to 3 same-team players within 1000hu
+                    # (world-frame relpos + dist + present; rotate at train time like TS)
+                    mates = []
+                    for (e2, qx, qy, tm) in plocs.get(int(tk[jj]), []):
+                        if e2 == ent or tm != myteam:
+                            continue
+                        dd = float(np.hypot(qx - ox[jj], qy - oy[jj]))
+                        if dd <= 1000.0:
+                            mates.append((dd, qx - ox[jj], qy - oy[jj]))
+                    mates.sort()
+                    for sl, (dd, dx, dy) in enumerate(mates[:3]):
+                        TM[r, s, sl, 0] = dx
+                        TM[r, s, sl, 1] = dy
+                        TM[r, s, sl, 2] = dd / 1000.0
+                        TM[r, s, sl, 3] = 1.0
+    np.savez_compressed(os.path.join(DS, tag + 'B_threatwin.npz'), TW=TW, TS=TS, TM=TM)
     nz = (np.abs(TW).sum(axis=(1, 2)) > 0).mean()
     print(tag, TW.shape, 'frac rows with any signal: %.3f' % nz, flush=True)
     print(tag, 'col means:', TW.reshape(-1, 6).mean(axis=0).round(4), flush=True)
+    print(tag, 'teammate present frac per slot:',
+          (TM[:, :, :, 3] > 0).mean(axis=(0, 1)).round(3), flush=True)
 
 
 if __name__ == '__main__':
