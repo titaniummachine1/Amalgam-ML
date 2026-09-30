@@ -68,6 +68,7 @@ struct CBehaviorPrediction::TargetState
 	float m_flEyeYaw[kRing] = {}; // degrees, as training saw them
 	float m_flGrounded[kRing] = {};
 	int m_iClass = 0;
+	int m_iWeaponDef = -1; // active weapon itemdef; -1 = unknown (check skipped)
 	int m_iHead = 0;
 	int m_iCount = 0;
 	float m_flHidden[kHid] = {}; // reserved: incremental hidden update (phase 3 perf)
@@ -119,10 +120,12 @@ void CBehaviorPrediction::EnsureWeights()
 	m_bWeightsReady = true;
 }
 
-void CBehaviorPrediction::PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass)
+void CBehaviorPrediction::PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass, int iWeaponDef)
 {
 	auto& st = m_mTargets[iEntIndex]; // default-constructs on first sight
 	bool bReset = (st.m_iCount > 0) && (st.m_iClass != iClass);
+	if (!bReset && st.m_iCount > 0 && st.m_iWeaponDef >= 0 && iWeaponDef >= 0 && st.m_iWeaponDef != iWeaponDef)
+		bReset = true; // loadout change respawns capabilities without moving — invalidate
 	float flStepHu = 0.f, flStepX = 0.f, flStepY = 0.f;
 	bool bHasPrev = (st.m_iCount > 0);
 	if (!bReset && bHasPrev)
@@ -142,6 +145,7 @@ void CBehaviorPrediction::PushState(int iEntIndex, const Vec3& vOrigin, float fl
 		bHasPrev = false;
 	}
 	st.m_iClass = iClass;
+	st.m_iWeaponDef = iWeaponDef;
 	// walk validity: frozen spawn ticks are observations, not movement history
 	if (bHasPrev && flStepHu > kMoveHu)
 	{
@@ -299,9 +303,12 @@ int CBehaviorPrediction::TicksSinceWalk(int iEntIndex) const
 // Build the 66x14 warmup feature block from the ring tail, exactly as training.
 static int BuildWarmup(const CBehaviorPrediction::TargetState& st, float flMaxV, float ouFeat[kWarmup][kFeat], float* pYawRad)
 {
-	if (st.m_iCount < 22) // ablation: 0.33s minimum viable warmup
+	// FULL history required: never evaluate on partial warmup. A 22-tick ablation
+	// showed similar hit-rate, but partial warmups destabilize the hidden state
+	// across target switches — correctness over latency. New targets wait 1s.
+	if (st.m_iCount < kWarmup)
 		return 0;
-	const int n = st.m_iCount < kWarmup ? st.m_iCount : kWarmup;
+	const int n = kWarmup;
 	// gather tail in order (oldest..newest), index 0 = oldest
 	float ox[kWarmup], oy[kWarmup], eye[kWarmup], gr[kWarmup];
 	for (int i = 0; i < n; i++)

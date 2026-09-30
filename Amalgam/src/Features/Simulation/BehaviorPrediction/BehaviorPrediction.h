@@ -127,8 +127,11 @@ public:
 	void Reset(int iEntIndex = -1);
 	// Per-tick push of fresh server state for a tracked player (cheap, always on).
 	// Ticks are assumed consecutive: caller must Reset() on death/dormancy gaps.
-	// Teleport (>300hu step) and class change hard-reset internally.
-	void PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass);
+	// Teleport (>300hu step), class change, AND loadout/weapon change hard-reset
+	// internally (loadout change respawns you: same position, new capabilities —
+	// position-only detectors miss it). iWeaponDef = item definition index of the
+	// active weapon, or -1 when unknown (check skipped, teleport/class still apply).
+	void PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass, int iWeaponDef = -1);
 	// Roll out up to iTicks ahead (cap 132). Writes per-step accel (ego hu/s^2)
 	// into pOut, returns steps written. Confidence is 1.0 until the value head
 	// lands (phase 2); gate on policy only until then.
