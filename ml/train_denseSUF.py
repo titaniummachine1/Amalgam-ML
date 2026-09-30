@@ -65,6 +65,16 @@ Xev, Hev, Vev = load('eval')
 print('train', Xtr.shape, 'eval', Xev.shape, 'w(1)=%.3f w(66)=%.3f' % (W[0], W[65]), flush=True)
 
 
+def apply_friction(v, gr):
+    # TF2 ground friction FIRST (engine order: coast, then policy accel on top).
+    # drop = max(speed,100)*sv_friction(4)*dt. Air: none. Differentiable.
+    sp = (v ** 2).sum(-1, keepdim=True).sqrt()
+    drop = torch.clamp(sp, min=100.0) * 4.0 * DT
+    newsp = torch.clamp(sp - drop, min=0.0)
+    scale = torch.where(sp > 0, newsp / sp.clamp_min(1e-6), torch.ones_like(sp))
+    return v * (gr * scale + (1.0 - gr))
+
+
 def unroll(net, xb):
     mv = (xb[:, -1:, 5:] * torch.from_numpy(
         np.array([400, 300, 240, 280, 320, 230, 300, 300, 300], dtype=np.float32))).sum(-1, keepdim=True)
@@ -77,7 +87,7 @@ def unroll(net, xb):
     traj = []
     for _ in range(66):
         a = net.head(hh[-1]) * mv.squeeze(1)
-        v = v + a * DT
+        v = apply_friction(v, gr) + a * DT
         p = p + v * DT
         sp = (v ** 2).sum(-1, keepdim=True).sqrt() / mv.squeeze(1)
         dyn = torch.cat([(v / mv.squeeze(1)).unsqueeze(1), sp.unsqueeze(1),
