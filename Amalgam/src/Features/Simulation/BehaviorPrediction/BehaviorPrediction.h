@@ -67,6 +67,12 @@
 //   targeting logic) is predicted constantly, so hiddens are warm, prediction
 //   history exists, and the firing solution is ready the instant the user IS
 //   prepared to shoot. Idle prediction is pure profit (rings + cached hiddens).
+// Override (no decision model is perfect): two sliders + one keybind.
+//   Slider 1 = normal gate (preset-mapped, bounded, default knee of curve).
+//   Slider 2 = override floor (lower bound while override held — never fully blind).
+//   Keybind (hold) = "I know better": dying and can't wait, cross-map splash bully
+//   where any probability is worth it. Fires at override floor, not at zero.
+//   Default assumes the user doesn't know; the override assumes sometimes they do.
 // Control split (user vs AI — misuse-proofing):
 //   AI owns per-shot odds (value head) — the user cannot judge these, so they are
 //   never user-tunable, only displayed (live confidence + recent gated hit-rate).
