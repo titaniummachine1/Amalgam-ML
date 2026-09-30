@@ -49,6 +49,15 @@ ALL 66 ticks, time weight w(t)=exp((t-66)/33) — exponential difficulty scaling
 anchored w(66)=1, w(1)=0.14. Measured coast difficulty growth: err=0.47*t^1.42.
 Hit-rate: 97.0/82.5/58.2/27.2/12.4 vs coast 92.4/70.7/50.8/28.1/10.9 —
 beats coast 4/5, 500ms still -0.9pp. INT8 weights preserve hit-rate.
+
+Dense-C soldier (current champion, gru_soldier_denseC.pt): friction-order unroll
+in training AND eval + combat-masked data (damage-anchored keep ±[5s before,
+20s after], union auto-widens). Hit-rate full: 97.8/86.4/61.8/27.7/13.1;
+combat-masked: 98.0/86.3/61.8/28.3/14.0. Beats dense66 everywhere on both sets.
+INT8-verified (denseC-q within noise, 500ms reads higher). In-repo weights
+swapped to denseC. Lesson: model+rollout dynamics are one unit — evaluating
+friction-trained weights with a frictionless rollout faked a collapse
+(19.5/3.6) that vanished under correct dynamics.
 Nine specialists (warm-started, horizon-weighted): sniper 5.89 leads; spy 57.23
 hardest (cloak behavior unobservable). Medic skipped (too few windows).
 

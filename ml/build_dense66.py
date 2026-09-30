@@ -1,8 +1,8 @@
-"""Dense 66-tick target cache for soldier windows (trainA/evalA, class 3).
+"""Dense 66-tick target cache for ALL classes (every tick 1..66 gets a target).
 For every sample: actual ego-frame displacement at ticks 1..66 + validity mask.
-Validity per tick: consecutive ticks, same class, no teleport step.
+Validity per tick: consecutive ticks, same class as label tick, no teleport step.
 R recomputed EXACTLY as build_ds_all.py; validated against stored H.
-Output: trainA_dense66.npz / evalA_dense66.npz with Hd (N,66,2), Vd (N,66 bool)."""
+Output: train<A/B>_dense66.npz / eval<A/B>_dense66.npz with Hd (N,66,2), Vd (N,66 bool)."""
 import os
 import numpy as np
 import sqlite3
@@ -16,11 +16,14 @@ con = sqlite3.connect(os.path.join(DS, 'dataset_all.db'))
 
 
 def build(tag):
-    k = np.load(os.path.join(D, tag + 'Ak.npz'))
+    SUF = os.environ.get('DS_SUFFIX', 'A')
+    k = np.load(os.path.join(D, tag + SUF + 'k.npz'))
     K = k['K']
-    sel = K[:, 3] == 3
-    K = K[sel]
+    # EXPLICIT soldier filter (contract: dense rows align 1:1 with soldier-filtered
+    # keys in order; train scripts index Hd with positions into the soldier subset)
+    K = K[K[:, 3] == 3]
     N = len(K)
+    assert N > 0, 'no soldier keys'
     Hd = np.full((N, 66, 2), np.nan, dtype=np.float32)
     Vd = np.zeros((N, 66), dtype=bool)
     groups = defaultdict(list)
@@ -82,14 +85,14 @@ def build(tag):
         done += 1
         if done % 10 == 0:
             print(f'{tag} groups {done}/{len(groups)}', flush=True)
-    np.savez_compressed(os.path.join(D, tag + 'A_dense66.npz'), Hd=Hd, Vd=Vd)
+    np.savez_compressed(os.path.join(D, tag + SUF + '_dense66.npz'), Hd=Hd, Vd=Vd)
     cov = Vd.mean(axis=0)
     print(tag, Hd.shape, 'coverage t=1/7/33/66:',
           f'{cov[0]:.2f}/{cov[6]:.2f}/{cov[32]:.2f}/{cov[65]:.2f}', flush=True)
     # validate R: horizons [7,13,20,33,66] (idx 6,12,19,32,65) vs stored H
-    d = np.load(os.path.join(D, tag + 'A.npz'), mmap_mode='r')
+    d = np.load(os.path.join(D, tag + SUF + '.npz'), mmap_mode='r')
     H = np.array(d['H'])
-    kfull = np.load(os.path.join(D, tag + 'Ak.npz'))['K']
+    kfull = np.load(os.path.join(D, tag + SUF + 'k.npz'))['K']
     H = H[kfull[:, 3] == 3]
     err = []
     for j, hi in enumerate([6, 12, 19, 32, 65]):

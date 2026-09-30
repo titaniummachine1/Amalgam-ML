@@ -16,8 +16,9 @@ Control split: AI owns odds, user owns bounded preset + panic-keybind override
 - Key files: `train3/eval3.npz` (soldier, pure-input labels), `trainA/evalA.npz`
   (all-class, 14-dim), `trainB/evalB.npz` (all-class + impulse-split, 682k drops),
   `manifest.json` (config-hashed feature groups).
-- Checkpoints: `gru_soldier_dense66.pt` = SOLDIER CHAMPION. `gru_all_v6.pt` (pending,
-  engine-order finetune). `gru64_v4.pt` = previous soldier best. `gru_all_v5.pt` superseded.
+- Checkpoints: `gru_soldier_denseC.pt` = CHAMPION (soldier, combat-masked,
+  friction-order). `gru_soldier_dense66.pt` superseded (kept in git history).
+  `gru_all_v6.pt` (all-class friction finetune, eval 28.53). `gru64_v4.pt` old best.
 - Threat features built (`trainA_ext.npz`: walk_age + 6 threat feats, 15% nonzero) —
   NOT yet in any training input (needs input-dim expansion = next arch step).
 
@@ -50,9 +51,23 @@ Control split: AI owns odds, user owns bounded preset + panic-keybind override
 - coast (soldier): 92.4/70.7/50.8/28.1/10.9
 - v3ii: 96.7/82.2/58.1/27.0/12.5
 - v4 (hitbox finetune): 96.8/82.3/59.0/28.2/12.7
-- dense66 soldier (exp weights): 97.0/82.5/58.2/27.2/12.4
-- all-class v5: eval loss 30.23 (hit-rate pending v6 line)
+- dense66: 97.0/82.5/58.2/27.2/12.4 (B-eval: 97.5/85.5/59.4/27.2/13.0)
+- denseC (friction unroll + combat mask): 97.8/86.4/61.8/27.7/13.1 full,
+  98.0/86.3/61.8/28.3/14.0 combat-masked. CHAMPION. INT8-verified (≤0.4pp).
+- all-class v6: eval loss 28.53 (hit-rate pending v6 line)
 - specialists (loss): sniper 5.89 best, spy 57.23 hardest, medic skipped (thin data)
+
+## Hard lessons (read before touching evals)
+- EVAL DYNAMICS MUST MATCH TRAINING DYNAMICS. denseC looked collapsed
+  (19.5/3.6 @500/1000ms) purely because it was evaluated with a frictionless
+  rollout while trained with friction. Same weights, correct unroll: champion.
+  Always: model+rollout combo is the unit, never the weights alone.
+- Knockback: 33k hurt events extracted, 90% victim-resolved via health drops.
+  Impulse-split caps already capture ~all of it (flagged ≈ clean distribution).
+  Near-damage labels ARE hotter (p50 10k vs 870) — caps, not events, do the work.
+- Data is clean: 0 NaNs, 0 dupes (PK), teams 2/3 only, 4 demos have zero
+  projectiles (few player samples there, defaults cover). Rocket oz 100% NaN → 2D only.
+- Threat features exist (15% nonzero, FOV 5%) but are NOT in any training input yet.
 
 ## In flight
 - `finetune_all_fric.py` → `gru_all_v6.pt` (engine-order, all-class). Nearly done.

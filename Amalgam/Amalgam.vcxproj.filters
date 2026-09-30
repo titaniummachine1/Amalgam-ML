@@ -410,7 +410,7 @@
     <ClInclude Include="src\Features\Resolver\Resolver.h" />
     <ClInclude Include="src\Features\Simulation\MovementSimulation\MovementSimulation.h" />
     <ClInclude Include="src\Features\Simulation\BehaviorPrediction\BehaviorPrediction.h" />
-    <ClInclude Include="src\Features\Simulation\BehaviorPrediction\weights_soldier_dense66.h" />
+    <ClInclude Include="src\Features\Simulation\BehaviorPrediction\weights_soldier_denseC.h" />
     <ClInclude Include="src\Features\Simulation\ProjectileSimulation\ProjectileSimulation.h" />
     <ClInclude Include="src\Features\Ticks\Ticks.h" />
     <ClInclude Include="src\Features\Visuals\Chams\Chams.h" />
