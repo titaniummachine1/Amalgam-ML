@@ -57,9 +57,12 @@
 //   loss = per-tick position divergence + final endpoint divergence.
 //   (Frozen-champion corr features FAILED as static context: corr1 rollout collapse.
 //   Live-buffer only.)
-// Label discipline: PURE INPUT acceleration only. Friction/gravity and all other
-//   non-input forces are cancelled in the label (ground: A_in = dV/dt + vhat*max(|v|,100)*4;
-//   air 2D: A_in = dV/dt). Simulation owns physics; policy learns behavior (1-2s context).
+// Label discipline: PURE INPUT acceleration only. Friction/gravity, knockback
+// impulses, and all other non-input forces are excluded from the label
+// (ground: A_in = dV/dt + vhat*max(|v|,100)*4; air 2D: A_in = dV/dt;
+// impulse-split at build: ground |A|>14*MAXV, air |A|>1500 -> drop sample).
+// Runtime mirrors with a per-state magnitude clamp (direction preserved).
+// Simulation owns physics; policy learns behavior (1-2s context).
 // Prediction runs ALWAYS, not only when firing: the would-be target (same
 //   targeting logic) is predicted constantly, so hiddens are warm, prediction
 //   history exists, and the firing solution is ready the instant the user IS
@@ -109,6 +112,8 @@ class CBehaviorPrediction
 public:
 	void Reset(int iEntIndex = -1);
 	// Per-tick push of fresh server state for a tracked player (cheap, always on).
+	// Ticks are assumed consecutive: caller must Reset() on death/dormancy gaps.
+	// Teleport (>300hu step) and class change hard-reset internally.
 	void PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass);
 	// Roll out up to iTicks ahead (cap 132). Writes per-step accel (ego hu/s^2)
 	// into pOut, returns steps written. Confidence is 1.0 until the value head
@@ -116,6 +121,12 @@ public:
 	// m_iBudget = how many ranked targets get full prediction per tick.
 	int Predict(int iEntIndex, int iTicks, BehaviorPrediction_t* pOut, int iMaxOut);
 	int m_iBudget = 1;
+	// Validity: movement history is meaningless until walk begins (post-spawn freeze).
+	bool IsHistoryValid(int iEntIndex) const;
+	// Ticks since walk began (-1 if never). Drives warmup gating + confidence later.
+	int TicksSinceWalk(int iEntIndex) const;
+	// LTM readout in ml/build_ltm1.py order/scale (8 feats). False if engagement <8 ticks.
+	bool GetLTM(int iEntIndex, float ouFeat[8]) const;
 
 private:
 	struct TargetState;

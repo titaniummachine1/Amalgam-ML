@@ -23,11 +23,14 @@
 namespace
 {
 	constexpr float kTickDt = 1.f / 66.f;
-	constexpr int kWarmup = 66;   // 1s warmup tail consumed from the 2s ring
-	constexpr int kRing = 132;    // 2s ring per player
+	constexpr int kWarmup = 66;   // 1s warmup tail consumed from the 4s ring
+	constexpr int kRing = 264;    // 4s ring per player (~16KB; 32 players ~= 512KB)
 	constexpr int kMaxRoll = 132;
 	constexpr int kFeat = 14;     // 5 base + 9 class one-hot
 	constexpr int kHid = 96;
+	constexpr float kTeleportHu = 300.f; // step larger than this = spawn/teleport, history reset
+	constexpr float kMoveHu = 0.5f;      // step larger than this = player is walking
+	constexpr int kEngCap = 600;         // LTM engagement cap ticks (mirrors training)
 
 	static_assert(BehaviorPolicy::kNin == kFeat, "weights/header arch mismatch");
 	static_assert(BehaviorPolicy::kH == kHid, "weights/header arch mismatch");
@@ -68,6 +71,24 @@ struct CBehaviorPrediction::TargetState
 	int m_iHead = 0;
 	int m_iCount = 0;
 	float m_flHidden[kHid] = {}; // reserved: incremental hidden update (phase 3 perf)
+
+	// ---- validity: movement history is meaningless until walk begins ----
+	// (post-spawn/death freeze). Frozen ticks stay in the ring (correct "standing"
+	// observation) but do not count as movement history.
+	bool m_bWalkBegan = false;
+	int m_iSinceWalk = 0; // ticks since walk began (cap kRing)
+
+	// ---- LTM scratchpad: O(1) incremental mirror of ml/build_ltm1.py 8 feats ----
+	// Engagement = current consecutive run; frozen at kEngCap (rare; rounds are short).
+	int m_iEng = 0;
+	float m_flTurnSum = 0.f; int m_iTurns = 0;   // strafe bias (mean turn sign)
+	float m_flPrevHeading = 0.f; bool m_bHasHeading = false;
+	int m_iPrevSign = 0; int m_iFlips = 0;       // reversal rate
+	float m_flSpMean = 0.f, m_flSpM2 = 0.f;      // Welford speed
+	float m_flAccMean[2] = {}, m_flAccM2[2] = {}; int m_iAccN = 0; // per-component accel
+	int m_iAir = 0;
+	float m_flEyeMean = 0.f, m_flEyeM2 = 0.f; int m_iEyeN = 0;
+	float m_flPrevVel[2] = {}; bool m_bHasPrevVel = false;
 };
 
 void CBehaviorPrediction::Reset(int iEntIndex)
@@ -101,12 +122,34 @@ void CBehaviorPrediction::EnsureWeights()
 void CBehaviorPrediction::PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass)
 {
 	auto& st = m_mTargets[iEntIndex]; // default-constructs on first sight
-	if (st.m_iCount > 0 && (st.m_iClass != iClass))
+	bool bReset = (st.m_iCount > 0) && (st.m_iClass != iClass);
+	float flStepHu = 0.f, flStepX = 0.f, flStepY = 0.f;
+	bool bHasPrev = (st.m_iCount > 0);
+	if (!bReset && bHasPrev)
 	{
-		// class change invalidates history — hard reset, never hold stale state
+		// teleport / spawn jump invalidates history — fresh start, never stale state
+		const int li = (st.m_iHead - 1) % kRing;
+		const int lii = li < 0 ? li + kRing : li;
+		flStepX = vOrigin.x - st.m_flPos[lii][0];
+		flStepY = vOrigin.y - st.m_flPos[lii][1];
+		flStepHu = sqrtf(flStepX * flStepX + flStepY * flStepY);
+		if (flStepHu > kTeleportHu)
+			bReset = true;
+	}
+	if (bReset)
+	{
 		st = TargetState();
+		bHasPrev = false;
 	}
 	st.m_iClass = iClass;
+	// walk validity: frozen spawn ticks are observations, not movement history
+	if (bHasPrev && flStepHu > kMoveHu)
+	{
+		st.m_bWalkBegan = true;
+		st.m_iSinceWalk = 0;
+	}
+	else if (st.m_bWalkBegan && st.m_iSinceWalk < kRing)
+		st.m_iSinceWalk++;
 	const int w = st.m_iHead % kRing;
 	st.m_flPos[w][0] = vOrigin.x;
 	st.m_flPos[w][1] = vOrigin.y;
@@ -116,6 +159,141 @@ void CBehaviorPrediction::PushState(int iEntIndex, const Vec3& vOrigin, float fl
 	st.m_iHead++;
 	if (st.m_iCount < kRing)
 		st.m_iCount++;
+
+	// ---- LTM incremental update (mirrors ml/build_ltm1.py; frozen at cap) ----
+	// NOTE: caller must Reset() on death/dormancy gaps; PushState ticks are consecutive.
+	if (bHasPrev && st.m_iEng < kEngCap)
+	{
+		const float vx = flStepX / kTickDt;
+		const float vy = flStepY / kTickDt;
+		const float sp = sqrtf(vx * vx + vy * vy);
+		st.m_iEng++;
+		if (!bGrounded)
+			st.m_iAir++;
+		// Welford speed
+		{
+			const float d = sp - st.m_flSpMean;
+			st.m_flSpMean += d / st.m_iEng;
+			st.m_flSpM2 += d * (sp - st.m_flSpMean);
+		}
+		// per-component accel Welford (clip blast impulses: physics, not behavior)
+		if (st.m_bHasPrevVel)
+		{
+			float ax = (vx - st.m_flPrevVel[0]) / kTickDt;
+			float ay = (vy - st.m_flPrevVel[1]) / kTickDt;
+			if (ax > 20000.f) ax = 20000.f;
+			if (ax < -20000.f) ax = -20000.f;
+			if (ay > 20000.f) ay = 20000.f;
+			if (ay < -20000.f) ay = -20000.f;
+			st.m_iAccN++;
+			{
+				const float d = ax - st.m_flAccMean[0];
+				st.m_flAccMean[0] += d / st.m_iAccN;
+				st.m_flAccM2[0] += d * (ax - st.m_flAccMean[0]);
+			}
+			{
+				const float d = ay - st.m_flAccMean[1];
+				st.m_flAccMean[1] += d / st.m_iAccN;
+				st.m_flAccM2[1] += d * (ay - st.m_flAccMean[1]);
+			}
+		}
+		// heading / turns: deadband + speed gate kill frozen-atan2 noise
+		// (mirrors training exactly: both endpoints speed>10, |turn|>0.02 rad)
+		{
+			const float hd = atan2f(vy, vx);
+			const float spPrev = st.m_bHasPrevVel
+				? sqrtf(st.m_flPrevVel[0] * st.m_flPrevVel[0] + st.m_flPrevVel[1] * st.m_flPrevVel[1])
+				: 0.f;
+			if (st.m_bHasHeading && sp > 10.f && spPrev > 10.f)
+			{
+				float dh = hd - st.m_flPrevHeading;
+				while (dh > 3.14159265f) dh -= 6.2831853f;
+				while (dh < -3.14159265f) dh += 6.2831853f;
+				if (dh > 0.02f)
+				{
+					st.m_flTurnSum += 1.f;
+					st.m_iTurns++;
+					if (st.m_iPrevSign == -1)
+						st.m_iFlips++;
+					st.m_iPrevSign = 1;
+				}
+				else if (dh < -0.02f)
+				{
+					st.m_flTurnSum -= 1.f;
+					st.m_iTurns++;
+					if (st.m_iPrevSign == 1)
+						st.m_iFlips++;
+					st.m_iPrevSign = -1;
+				}
+			}
+			st.m_flPrevHeading = hd;
+			st.m_bHasHeading = true;
+		}
+		st.m_flPrevVel[0] = vx;
+		st.m_flPrevVel[1] = vy;
+		st.m_bHasPrevVel = true;
+		// eye stability (skip non-finite like training's nan handling)
+		if (flEyeYawDeg == flEyeYawDeg)
+		{
+			st.m_iEyeN++;
+			const float d = flEyeYawDeg - st.m_flEyeMean;
+			st.m_flEyeMean += d / st.m_iEyeN;
+			st.m_flEyeM2 += d * (flEyeYawDeg - st.m_flEyeMean);
+		}
+	}
+}
+
+// LTM readout in ml/build_ltm1.py order/scale:
+// [strafe bias, reversal/10, speedmean, speedvar, accelvar, airtime, runlen, eyestable]
+bool CBehaviorPrediction::GetLTM(int iEntIndex, float ouFeat[8]) const
+{
+	for (int i = 0; i < 8; i++)
+		ouFeat[i] = 0.f;
+	const auto it = m_mTargets.find(iEntIndex);
+	if (it == m_mTargets.end() || it->second.m_iEng < 8)
+		return false;
+	const auto& st = it->second;
+	const float n = float(st.m_iEng);
+	ouFeat[0] = st.m_iTurns > 0 ? st.m_flTurnSum / float(st.m_iTurns) : 0.f;
+	if (ouFeat[0] > 1.f) ouFeat[0] = 1.f;
+	if (ouFeat[0] < -1.f) ouFeat[0] = -1.f;
+	float rev = float(st.m_iFlips) / (n * kTickDt);
+	if (rev > 20.f) rev = 20.f;
+	ouFeat[1] = rev / 20.f;
+	float sm = st.m_flSpMean / 400.f;
+	if (sm > 2.f) sm = 2.f;
+	ouFeat[2] = sm / 2.f;
+	float sv = (st.m_flSpM2 / n) / 40000.f;
+	ouFeat[3] = sv > 1.f ? 1.f : sv;
+	float av = 0.f;
+	if (st.m_iAccN > 0)
+	{
+		const float mx = st.m_flAccMean[0], my = st.m_flAccMean[1];
+		const float m = (mx + my) * 0.5f;
+		av = (st.m_flAccM2[0] + st.m_flAccM2[1]) / (2.f * float(st.m_iAccN))
+			+ ((mx - m) * (mx - m) + (my - m) * (my - m)) * 0.5f;
+	}
+	av /= 400000000.f;
+	ouFeat[4] = av > 1.f ? 1.f : av;
+	ouFeat[5] = float(st.m_iAir) / n;
+	ouFeat[6] = n / float(kEngCap);
+	if (ouFeat[6] > 1.f) ouFeat[6] = 1.f;
+	ouFeat[7] = (st.m_iEyeN > 0 && sqrtf(st.m_flEyeM2 / float(st.m_iEyeN)) < 1.f) ? 1.f : 0.f;
+	return true;
+}
+
+bool CBehaviorPrediction::IsHistoryValid(int iEntIndex) const
+{
+	const auto it = m_mTargets.find(iEntIndex);
+	return it != m_mTargets.end() && it->second.m_bWalkBegan;
+}
+
+int CBehaviorPrediction::TicksSinceWalk(int iEntIndex) const
+{
+	const auto it = m_mTargets.find(iEntIndex);
+	if (it == m_mTargets.end() || !it->second.m_bWalkBegan)
+		return -1;
+	return it->second.m_iSinceWalk;
 }
 
 // Build the 66x14 warmup feature block from the ring tail, exactly as training.
@@ -248,6 +426,35 @@ int CBehaviorPrediction::Predict(int iEntIndex, int iTicks, BehaviorPrediction_t
 		}
 		acc[0] *= flMaxV;
 		acc[1] *= flMaxV; // ego hu/s^2
+		// per-state clamp: training labels impulse-split knockbacks (external force,
+		// not input), so the net never legitimately exceeds these. Ground input caps
+		// at ~accel(10)*wishspeed + friction residual ~= 14*MAXV; air is small.
+		// Clamp magnitude (preserve direction); sim enforces the rest.
+		{
+			const float flCap = grLast > 0.5f ? 14.f * flMaxV : 1500.f;
+			const float flMag = sqrtf(acc[0] * acc[0] + acc[1] * acc[1]);
+			if (flMag > flCap)
+			{
+				acc[0] *= flCap / flMag;
+				acc[1] *= flCap / flMag;
+			}
+		}
+		// engine order (vector addition): coast FIRST (friction on current velocity,
+		// gravity is z-only so 2D skips it), THEN policy accel on top of the coasted
+		// state. Friction magnitude tracks evolving speed; integrated velocity feeds
+		// position AND the next tick's friction + GRU feedback.
+		if (grLast > 0.5f)
+		{
+			const float flSp = sqrtf(v[0] * v[0] + v[1] * v[1]);
+			if (flSp > 0.f)
+			{
+				float flDrop = (flSp > 100.f ? flSp : 100.f) * 4.f * kTickDt;
+				float flNew = flSp - flDrop;
+				if (flNew < 0.f) flNew = 0.f;
+				v[0] *= flNew / flSp;
+				v[1] *= flNew / flSp;
+			}
+		}
 		v[0] += acc[0] * kTickDt;
 		v[1] += acc[1] * kTickDt;
 		pOut[written].m_vAccel.x = acc[0];
