@@ -67,7 +67,15 @@
 //   targeting logic) is predicted constantly, so hiddens are warm, prediction
 //   history exists, and the firing solution is ready the instant the user IS
 //   prepared to shoot. Idle prediction is pure profit (rings + cached hiddens).
-// Scope boundary (small, on purpose): rings for ALL players at ALL times
+// Control split (user vs AI — misuse-proofing):
+//   AI owns per-shot odds (value head) — the user cannot judge these, so they are
+//   never user-tunable, only displayed (live confidence + recent gated hit-rate).
+//   User owns ONE aggressiveness preset (Patient/Balanced/Aggressive), mapped to a
+//   threshold inside a bounded range (never 0%: floor prevents spam-and-blame).
+//   Default = knee of the measured coverage/hit-rate curve. Auto mode picks the
+//   threshold from live calibration. Urgency modulates within the preset's band.
+//   Rationale: if the user can set 0% and miss everything, they will call it trash.
+//   Presets + floors + visible feedback keep every miss explainable.
 //   (32 or 100+ — ~8KB each, always affordable). Amalgam owns ALL viability
 //   logic (teammates, dormancy, ignore lists, FOV) via its existing selection.
 //   This module outputs exactly two things per predicted target: predicted accel
