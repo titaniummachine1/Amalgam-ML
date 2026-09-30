@@ -21,6 +21,11 @@ Control split: AI owns odds, user owns bounded preset + panic-keybind override
   previous best. `gru_all_v6.pt` (all-class friction finetune, eval 28.53).
 - Threat features built (`trainA_ext.npz`: walk_age + 6 threat feats, 15% nonzero) —
   NOT yet in any training input (needs input-dim expansion = next arch step).
+- Data expansion 2026-09-30: +21 MGE +3 orange (brygada, quality over demos.tf pubs).
+  did_registry.json append-only (0-24 frozen, new 25-48); all scripts migrated off
+  positional dids (which would have silently corrupted keys); eval set FROZEN
+  (byte-identical 147,984 rebuild verified). Train 532k→928k windows; thin classes
+  fixed: pyro 13k→51k, engy 11k→31k, medic 11k→24k, heavy 31k→39k. cls-0 excluded.
 
 ## What worked
 - Origin-derived velocity (networked vel stale in demos), NonLocal table priority (SourceTV).
