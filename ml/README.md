@@ -58,6 +58,13 @@ INT8-verified (denseC-q within noise, 500ms reads higher). In-repo weights
 swapped to denseC. Lesson: model+rollout dynamics are one unit — evaluating
 friction-trained weights with a frictionless rollout faked a collapse
 (19.5/3.6) that vanished under correct dynamics.
+
+Value head on denseC (value_denseC.pt, MLP 101->32->5 on frozen hidden+endpoint
+stats): gated hit-rate @300ms: thr 0.5 → 80% coverage at 65% (base 60%);
+@500ms: thr 0.5 → 12% coverage at 71% (base 27%). Head is conservative
+(under-confident at top, ~0% coverage above 0.7) — temperature scaling pending.
+Calibration roughly honest. Lesson 2: dense cache has 66 cols, horizons are
+[6,12,19,32,65] — first value run trained on wrong columns, retrained.
 Nine specialists (warm-started, horizon-weighted): sniper 5.89 leads; spy 57.23
 hardest (cloak behavior unobservable). Medic skipped (too few windows).
 
