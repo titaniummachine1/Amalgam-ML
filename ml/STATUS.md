@@ -16,9 +16,9 @@ Control split: AI owns odds, user owns bounded preset + panic-keybind override
 - Key files: `train3/eval3.npz` (soldier, pure-input labels), `trainA/evalA.npz`
   (all-class, 14-dim), `trainB/evalB.npz` (all-class + impulse-split, 682k drops),
   `manifest.json` (config-hashed feature groups).
-- Checkpoints: `gru_soldier_denseC.pt` = CHAMPION (soldier, combat-masked,
-  friction-order). `gru_soldier_dense66.pt` superseded (kept in git history).
-  `gru_all_v6.pt` (all-class friction finetune, eval 28.53). `gru64_v4.pt` old best.
+- Checkpoints: `gru_threatsimB.pt` = CHAMPION (soldier, threat-sim in rollout:
+  97.8/87.4/60.0/27.4/12.5 full, threat-active validated). `gru_soldier_denseC.pt`
+  previous best. `gru_all_v6.pt` (all-class friction finetune, eval 28.53).
 - Threat features built (`trainA_ext.npz`: walk_age + 6 threat feats, 15% nonzero) —
   NOT yet in any training input (needs input-dim expansion = next arch step).
 
