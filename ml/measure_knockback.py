@@ -6,6 +6,9 @@ Also self vs enemy split, and damage->impulse calibration data (for cancel desig
 import csv
 import glob
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import didreg
 from collections import defaultdict
 
 import numpy as np
@@ -83,8 +86,9 @@ tr = np.load(os.path.join(DS, 'trainB.npz'), mmap_mode='r')
 K = np.load(os.path.join(DS, 'trainBk.npz'))['K']
 X, Y = np.array(tr['X']), np.array(tr['Y'])
 # map demo did -> base name: did order == sorted csv list order (build_ds_all)
-files = sorted(f for f in glob.glob(os.path.join(D, '*.csv')) if not f.endswith('.proj.csv') and not f.endswith('.hurt.csv'))
-did2base = {i: os.path.basename(f) for i, f in enumerate(files)}
+import didreg as _dr
+did2base = _dr.reverse(_dr.load())  # did -> basename, stable forever
+files = None  # registry-owned
 # damage tick sets per (base, ent)
 dmg_ticks = defaultdict(set)
 for (base, ent), lst in dmg_by_victim.items():

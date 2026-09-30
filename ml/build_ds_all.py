@@ -1,7 +1,11 @@
-"""Dataset vA: ALL classes. Uses dataset_all.db (built by build_db_all.py).
-Series split on class change (history invalid across classes). Per-class maxspeed
-norm + one-hot class features (9). Pure-input accel labels. trainA/evalA.npz."""
+"""Dataset vB: ALL classes + per-state IMPULSE SPLIT (knockback is external force,
+not input: ground |A|>14*MAXV, air |A|>1500 -> drop sample). Uses dataset_all.db
+(built by build_db_all.py). Series split on class change. Per-class maxspeed
+norm + one-hot class features (9). Pure-input accel labels. trainB/evalB.npz."""
 import csv, glob, os, sqlite3
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import didreg
 import numpy as np
 
 D = os.path.join(os.path.expanduser('~'), 'Downloads', 'mge_csv')
@@ -25,8 +29,9 @@ EVAL_NAMES = {'tfmge_2026-09-28__21-42', 'tfmge_2026-09-28__22-02',
 con = sqlite3.connect(DB)
 con.execute('PRAGMA journal_mode=WAL')
 
-files = sorted(f for f in glob.glob(os.path.join(D, '*.csv')) if not f.endswith('.proj.csv'))
-demo_id = {os.path.basename(f): i for i, f in enumerate(files)}  # same order as build_db_all
+files = sorted(f for f in glob.glob(os.path.join(D, '*.csv'))
+               if not f.endswith('.proj.csv') and not f.endswith('.hurt.csv'))
+demo_id = didreg.register([os.path.basename(f) for f in files])  # registry, never positional
 
 # per (demo,ent) series -> AFK mask, segments, windows
 def series(did, ent):
@@ -35,6 +40,7 @@ def series(did, ent):
     return q
 
 Xtr, Ytr, Wtr, Htr, Ktr, Xev, Yev, Wev, Hev, Kev = [], [], [], [], [], [], [], [], [], []
+n_impulse = [0]
 eye_var_total = eye_var_moved = 0
 from collections import Counter
 cls_counts = Counter()
@@ -51,8 +57,10 @@ for name, did in sorted(demo_id.items(), key=lambda kv: kv[1]):
         ey = np.array([r[5] for r in s])
         cl = np.array([r[6] for r in s], dtype=np.int64)
         # consecutive + teleport + CLASS-CHANGE split (history invalid across classes)
+        # + known-class only (cls 0 = unclassified entity, not trainable)
         consec = np.ediff1d(t, to_begin=2) == 1
         samecls = np.ediff1d(cl, to_begin=0) == 0
+        knowncls = (cl >= 1) & (cl <= 9)
         step = np.linalg.norm(np.diff(o, axis=0, prepend=o[0:1]), axis=1)
         tele = step > TELEPORT
         # AFK: max displacement in +-AFK_WIN window
@@ -81,8 +89,8 @@ for name, did in sorted(demo_id.items(), key=lambda kv: kv[1]):
         eye_var_total += 1
         if np.nanstd(ey) > 1.0:
             eye_var_moved += 1
-        # segments of kept & consecutive & no-teleport & same-class
-        ok = keep & consec & (~tele) & samecls
+        # segments of kept & consecutive & no-teleport & same-class & known-class
+        ok = keep & consec & (~tele) & samecls & knowncls
         # derived velocity (backward diff, hu/s) — networked velocity is stale in demos
         v = np.diff(o, axis=0, prepend=o[0:1])[:, :2] / DT
         j = 0
@@ -127,6 +135,13 @@ for name, did in sorted(demo_id.items(), key=lambda kv: kv[1]):
                     s0 = float(np.linalg.norm(v0r))
                     if gr[lt] > 0.5 and s0 > 1.0:
                         A = A + (v0r / s0) * max(s0, 100.0) * 4.0
+                    # IMPULSE SPLIT: explosion knockback is external force, not input.
+                    # Ground input caps at ~accel(10)*wishspeed + friction residual ~= 14*MAXV;
+                    # air input is small (TF2 air-accelerate, no friction). Drop, don't learn.
+                    cap = 14.0 * MAXV if gr[lt] > 0.5 else 1500.0
+                    if float(np.linalg.norm(A)) > cap:
+                        n_impulse[0] += 1
+                        continue
                     Y = (R @ (A / MAXV)).astype(np.float32)
                     wt = float(np.clip(sp.mean() / 0.5, 0.1, 1.0))
                     H = np.full((len(HOR), 2), np.nan, dtype=np.float32)
@@ -143,10 +158,11 @@ print('series with varying eye yaw: %d/%d' % (eye_var_moved, eye_var_total), flu
 
 def save(tag, X, Y, W8, H, K):
     X = np.array(X); Y = np.array(Y); W8 = np.array(W8); H = np.array(H); K = np.array(K)
-    np.savez_compressed(os.path.join(OUT, tag + 'A.npz'), X=X, Y=Y, W=W8, H=H)
-    np.savez_compressed(os.path.join(OUT, tag + 'Ak.npz'), K=K)
+    np.savez_compressed(os.path.join(OUT, tag + 'B.npz'), X=X, Y=Y, W=W8, H=H)
+    np.savez_compressed(os.path.join(OUT, tag + 'Bk.npz'), K=K)
     print(tag, X.shape, 'meanW=%.3f' % W8.mean(), flush=True)
 
 save('train', Xtr, Ytr, Wtr, Htr, Ktr)
 save('eval', Xev, Yev, Wev, Hev, Kev)
+print('impulse-split dropped samples:', n_impulse[0])
 print('done, no VACUUM (shared DB)')

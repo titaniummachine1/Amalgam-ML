@@ -20,6 +20,9 @@ DB: dataset_all.db. Output trainA_ext.npz {W2, T} / evalA_ext.npz.
 import csv
 import glob
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import didreg
 import sqlite3
 from collections import defaultdict
 
@@ -35,8 +38,9 @@ PROJ_DT_TOL = 2  # accept projectile snapshot within [t-2, t]
 
 con = sqlite3.connect(os.path.join(DS, 'dataset_all.db'))
 
-CSV_FILES = sorted(f for f in glob.glob(os.path.join(D, '*.csv')) if not f.endswith('.proj.csv'))
-DID2CSV = {i: os.path.basename(f) for i, f in enumerate(CSV_FILES)}
+CSV_FILES = None  # registry-owned (see DID2CSV)
+import didreg as _dr
+DID2CSV = _dr.reverse(_dr.load())  # did -> basename, stable forever
 
 
 def load_proj(demo_base):

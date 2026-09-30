@@ -3,6 +3,9 @@ Recompute raw |A| for candidate labels (trainA windows), split by near-damage.
 Needs: trainA keys + DB. Reports |A| percentiles near vs far from damage."""
 import glob
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import didreg
 import sqlite3
 from collections import defaultdict
 
@@ -16,9 +19,9 @@ MAXV_CLS = {1: 400.0, 2: 300.0, 3: 240.0, 4: 280.0, 5: 320.0,
 con = sqlite3.connect(os.path.join(DS, 'dataset_all.db'))
 
 import csv
-files = sorted(f for f in glob.glob(os.path.join(D, '*.csv'))
-               if not f.endswith('.proj.csv') and not f.endswith('.hurt.csv'))
-did2base = {i: os.path.basename(f) for i, f in enumerate(files)}
+import didreg as _dr
+did2base = _dr.reverse(_dr.load())  # did -> basename, stable forever
+files = None  # registry-owned
 
 # damage tick sets per (base, ent) via health-drop join (reuse logic, compact)
 print('indexing damage...', flush=True)

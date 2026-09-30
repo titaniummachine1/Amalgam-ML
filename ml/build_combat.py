@@ -13,6 +13,9 @@ Input: trainB/evB.npz + Bk keys. Output: trainC/evC.npz (+Ck keys).
 import csv
 import glob
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import didreg
 from collections import defaultdict
 
 import numpy as np
@@ -22,9 +25,9 @@ DS = os.path.join(os.path.expanduser('~'), 'Downloads', 'mge_ds')
 PRE = 330    # 5s before dealing/taking
 POST = 1320  # 20s after (extends on new damage via union)
 
-files = sorted(f for f in glob.glob(os.path.join(D, '*.csv'))
-               if not f.endswith('.proj.csv') and not f.endswith('.hurt.csv'))
-did2base = {i: os.path.basename(f) for i, f in enumerate(files)}
+import didreg as _dr
+_did2base = _dr.reverse(_dr.load())  # did -> basename
+did2base = _did2base
 
 print('indexing damage events + resolving victims...', flush=True)
 vic_ticks = defaultdict(set)   # (base, ent) -> set(tick)
