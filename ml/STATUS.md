@@ -62,6 +62,10 @@ Control split: AI owns odds, user owns bounded preset + panic-keybind override
   (19.5/3.6 @500/1000ms) purely because it was evaluated with a frictionless
   rollout while trained with friction. Same weights, correct unroll: champion.
   Always: model+rollout combo is the unit, never the weights alone.
+- INDEXING: dense cache has 66 cols, horizons are [6,12,19,32,65]. value_denseC
+  trained once on WRONG columns (hi instead of mapped) — garbage labels, had to
+  retrain. Duel scripts caught it. Always validate eval code against a second
+  implementation before trusting headline numbers.
 - Knockback: 33k hurt events extracted, 90% victim-resolved via health drops.
   Impulse-split caps already capture ~all of it (flagged ≈ clean distribution).
   Near-damage labels ARE hotter (p50 10k vs 870) — caps, not events, do the work.
