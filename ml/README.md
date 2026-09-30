@@ -77,8 +77,7 @@ Note: single-step wMSE can look good while rollout lags coast (exposure bias) �
 always judge by autoregressive multi-horizon position error. Finetune with
 differentiable rollout loss before comparing.
 
-## Metric definition (hit-rate @24hu — read this before quoting numbers)
-For each eval sample (a real 1s history + its real future): roll out the policy,
+## Metric definition (hit-rate @24hu — read this before quoting numbers)For each eval sample (a real 1s history + its real future): roll out the policy,
 take predicted position at horizon h, compare to where the player ACTUALLY was.
 err = max(|dx|,|dz|) (Chebyshev — matches the square box, not a circle).
 Hit = err < 24hu, i.e. the predicted point falls inside the 48x48 AABB centered
@@ -86,6 +85,15 @@ on the actual position = a projectile aimed there connects (volume ignored).
 Hit-rate = fraction of TEST CASES that hit (not fraction of time).
 "57.8% @300ms" = in ~58 of 100 real situations, the 300ms prediction lands in-box.
 Coast = same procedure with constant-velocity rollout. Deltas vs coast are the score.
+
+## Magnet experiment (8-direction pull — honest negative)
+Human input IS 8-modal around yaw-forward (WASD combos): 54.7% of label mass
+within +-11.25deg of a mode vs 25% uniform (`ml/modality.py`). But post-hoc soft
+pull of output direction toward nearest 45deg mode (s = 0.05/0.15/0.3/0.5,
+magnitude untouched, `ml/magnet_sweep.py`) changes hit-rate by +-0.2pp noise
+only (s=0: 96.9/82.0/58.0/28.5/14.1). Verdict: policy already sits on the modes;
+output shaping adds nothing. A modal prior would have to live IN training
+(mixture-density) — noted, not scheduled. Default stays raw.
 
 ## Next
 
