@@ -22,7 +22,9 @@ DT = 1 / 66.0
 TELEPORT = 300.0
 MEM_WIN = 66
 PROJ_DT_TOL = 2
-con = sqlite3.connect(os.path.join(DS, 'dataset_all.db'))
+SUF = os.environ.get('OUT_SUFFIX', 'B')
+EYE_FRAME = os.environ.get('EYE_FRAME', '0') == '1'
+con = sqlite3.connect(os.path.join(DS, os.environ.get('ML_DB', 'dataset_all.db')))
 
 CSV_FILES = None  # registry-owned (see DID2CSV)
 import didreg as _dr
@@ -74,7 +76,7 @@ def load_players(demo_base):
 
 
 def build(tag):
-    k = np.load(os.path.join(DS, tag + 'Bk.npz'))['K']
+    k = np.load(os.path.join(DS, tag + SUF + 'k.npz'))['K']
     sol = np.where(k[:, 3] == 3)[0]
     Ks = k[sol]
     N = len(Ks)
@@ -199,13 +201,16 @@ def build(tag):
                     continue
                 if tk[jT] - tk[jT - 65] != 65:
                     continue  # warmup slice must be consecutive (matches base builder)
-                # ego frame at T (same fallback rule as build_ds_all)
+                # ego frame at T (same rule as build_ds_all: velocity when moving)
                 vltT = np.array([ox[jT] - ox[jT - 1], oy[jT] - oy[jT - 1]]) / DT
-                wyT = ey[jT - 65:jT + 1]
                 yawT = ey[jT]
                 if not np.isfinite(yawT):
                     yawT = 0.0
-                if np.nanstd(wyT) < 0.5 and np.linalg.norm(vltT) > 50:
+                if EYE_FRAME:
+                    if not np.isfinite(ey[jT]):
+                        yawT = (np.rad2deg(np.arctan2(vltT[1], vltT[0]))
+                                if np.linalg.norm(vltT) > 1.0 else 0.0)
+                elif np.linalg.norm(vltT) > 50:
                     yawT = np.rad2deg(np.arctan2(vltT[1], vltT[0]))
                 anT = np.deg2rad(yawT)
                 cT, sT = np.cos(-anT), np.sin(-anT)
@@ -240,7 +245,7 @@ def build(tag):
                         TM[r, s, sl, 1] = dy
                         TM[r, s, sl, 2] = dd / 1000.0
                         TM[r, s, sl, 3] = 1.0
-    np.savez_compressed(os.path.join(DS, tag + 'B_threatwin.npz'), TW=TW, TS=TS, TM=TM)
+    np.savez_compressed(os.path.join(DS, tag + SUF + '_threatwin.npz'), TW=TW, TS=TS, TM=TM)
     nz = (np.abs(TW).sum(axis=(1, 2)) > 0).mean()
     print(tag, TW.shape, 'frac rows with any signal: %.3f' % nz, flush=True)
     print(tag, 'col means:', TW.reshape(-1, 6).mean(axis=0).round(4), flush=True)

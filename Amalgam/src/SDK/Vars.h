@@ -274,7 +274,7 @@ NAMESPACE_BEGIN(Vars)
 			CVar(LeadAndRestrict, "Lead and restrict", false, VISUAL);
 			CVar(NoSpread, "No spread", false);
 
-			CVarEnum(AimHoldsFire, "Aim holds fire", 2, NOSAVE | DEBUGVAR, nullptr,
+			CVarEnum(AimHoldsFire, "Aim holds fire", 0, NOSAVE | DEBUGVAR, nullptr,
 				VA_LIST("False", "Minigun only", "Always"),
 				False, MinigunOnly, Always);
 			CVar(NoSpreadOffset, "No spread offset", 0.f, NOSAVE | DEBUGVAR | SLIDER_PRECISION, -1.f, 1.f, 0.1f);
@@ -323,6 +323,9 @@ NAMESPACE_BEGIN(Vars)
 				VA_LIST("Charge weapon", "Cancel charge", "Use arm time", "Air splash", "Lob angles", "Target dormant"),
 				ChargeWeapon = 1 << 0, CancelCharge = 1 << 1, UseArmTime = 1 << 2, AirSplash = 1 << 3, LobAngles = 1 << 4, TargetDormant = 1 << 5);
 			CVar(MaxSimulationTime, "Max simulation time", 1.f, SLIDER_MIN | SLIDER_PRECISION, 0.1f, 2.5f, 0.25f, "%gs");
+			CVar(BehaviorPrediction, "Behavior prediction", false);
+			CVar(ConfirmShot, "Confirm shot", true);
+			CVar(BehaviorEvalLog, "Behavior eval log", false);
 			CVar(HitChance, "Hit chance", 0.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
 			CVar(AutodetRadius, "Autodet radius", 90.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
 			CVar(SplashRadius, "Splash radius", 90.f, SLIDER_CLAMP | SLIDER_PRECISION, 0.f, 100.f, 10.f, "%g%%");
@@ -725,6 +728,7 @@ NAMESPACE_BEGIN(Vars)
 			CVar(ShieldTurnRate, "Shield turn rate", false);
 			CVar(NoPush, "No push", false);
 			CVar(MovementLock, "Movement lock", false);
+			CVar(MoveLog, "Movement logger", false);
 
 			CVar(AutoRocketJumpChokeGrounded, "Choke grounded", 1, NOSAVE | DEBUGVAR, 0, 3);
 			CVar(AutoRocketJumpChokeAir, "Choke air", 1, NOSAVE | DEBUGVAR, 0, 3);

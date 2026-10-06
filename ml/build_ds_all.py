@@ -11,7 +11,12 @@ import numpy as np
 D = os.path.join(os.path.expanduser('~'), 'Downloads', 'mge_csv')
 OUT = os.path.join(os.path.expanduser('~'), 'Downloads', 'mge_ds')
 os.makedirs(OUT, exist_ok=True)
-DB = os.path.join(OUT, 'dataset_all.db')
+# Generation switch: default reads dataset_all.db and writes the B files (frozen
+# baseline - do not change). EYE generation sets ML_DB=dataset_eye.db,
+# OUT_SUFFIX=C, EYE_FRAME=1 for the true view-relative frame.
+DB = os.path.join(OUT, os.environ.get('ML_DB', 'dataset_all.db'))
+SUF = os.environ.get('OUT_SUFFIX', 'B')
+EYE_FRAME = os.environ.get('EYE_FRAME', '0') == '1'
 
 # TF2 base run speeds hu/s by class id
 MAXV_CLS = {1: 400.0, 2: 300.0, 3: 240.0, 4: 280.0, 5: 320.0,
@@ -42,20 +47,38 @@ def series(did, ent):
 Xtr, Ytr, Wtr, Htr, Ktr, Xev, Yev, Wev, Hev, Kev = [], [], [], [], [], [], [], [], [], []
 n_impulse = [0]
 eye_var_total = eye_var_moved = 0
-from collections import Counter
+from collections import Counter, defaultdict
 cls_counts = Counter()
+# EVAL_ONLY=1: rebuild just the eval split (recovery path; train arrays stay
+# empty and are NOT saved, so existing train files are untouched).
+EVAL_ONLY = os.environ.get('EVAL_ONLY', '0') == '1'
+# FILTER AUDIT (per class): ticks at each stage, so over-pruning is visible.
+# stages: raw series ticks -> in ok-runs -> window candidates -> kept windows.
+# A stage that eats a class disproportionately is a bug, not a filter.
+audit_raw = Counter()    # ticks seen per class (known classes only)
+audit_ok = Counter()     # ticks inside ok-runs
+audit_cand = Counter()   # window candidates (label ticks reaching impulse check)
+audit_imp = Counter()    # dropped by impulse cap
+audit_keep = Counter()   # final windows
 for name, did in sorted(demo_id.items(), key=lambda kv: kv[1]):
     is_eval = any(k in name for k in EVAL_NAMES)
+    if EVAL_ONLY and not is_eval:
+        continue
     ents = [r[0] for r in con.execute('SELECT DISTINCT ent FROM ticks WHERE demo=?', (did,))]
     for ent in ents:
         s = series(did, ent)
-        if len(s) < W + 67:
+        # SHORT SERIES STAY: a window needs 66 warmup + 1 label tick (67). Future
+        # horizons just go NaN where unavailable (masked in loss). The old 133
+        # minimum threw away every short engagement (spawns, brief duels).
+        if len(s) < W + 1:
             continue
         t = np.array([r[0] for r in s])
         o = np.array([[r[1], r[2], r[3]] for r in s])
         gr = np.array([r[4] for r in s], dtype=np.float64)
         ey = np.array([r[5] for r in s])
         cl = np.array([r[6] for r in s], dtype=np.int64)
+        for c in cl[(cl >= 1) & (cl <= 9)]:
+            audit_raw[int(c)] += 1
         # consecutive + teleport + CLASS-CHANGE split (history invalid across classes)
         # + known-class only (cls 0 = unclassified entity, not trainable)
         consec = np.ediff1d(t, to_begin=2) == 1
@@ -102,18 +125,32 @@ for name, did in sorted(demo_id.items(), key=lambda kv: kv[1]):
             while k < len(s) and ok[k]:
                 k += 1
             run = np.arange(j, k)  # kept consecutive run
-            if len(run) >= W + 67:
-                for st in range(0, len(run) - W - 66, 4):
+            rcls = Counter(int(c) for c in cl[run] if 1 <= int(c) <= 9)
+            for c, n in rcls.items():
+                audit_ok[c] += n
+            if len(run) >= W + 1:
+                for st in range(0, len(run) - W, 4):
                     w = run[st:st + W]
                     lt = run[st + W]
                     cls = int(cl[lt])
                     MAXV = MAXV_CLS.get(cls, 300.0)
                     cls_counts[cls] += 1
-                    # ego frame: eye yaw at label tick, fallback velocity heading
+                    audit_cand[cls] += 1
+                    # ego frame: velocity heading when moving, else eye yaw.
+                    # (No eye-std threshold: it was knife-edge unstable (0.5) and
+                    # made old demos (frozen eye->velocity) inconsistent with new
+                    # demos (live eye->view). Motion direction is the frame when
+                    # moving; view when still. Deterministic, window-free.)
                     yaw = ey[lt]
                     if not np.isfinite(yaw):
                         yaw = 0.0
-                    if np.nanstd(ey[w]) < 0.5 and np.linalg.norm(v[lt]) > 50:
+                    if EYE_FRAME:
+                        # true view-relative frame (live eye data): use it unless
+                        # the eye itself is missing, then velocity heading
+                        if not np.isfinite(ey[lt]):
+                            yaw = (np.rad2deg(np.arctan2(v[lt, 1], v[lt, 0]))
+                                   if np.linalg.norm(v[lt]) > 1.0 else 0.0)
+                    elif np.linalg.norm(v[lt]) > 50:
                         yaw = np.rad2deg(np.arctan2(v[lt, 1], v[lt, 0]))
                     a = np.deg2rad(yaw)
                     c, sn = np.cos(-a), np.sin(-a)
@@ -136,11 +173,15 @@ for name, did in sorted(demo_id.items(), key=lambda kv: kv[1]):
                     if gr[lt] > 0.5 and s0 > 1.0:
                         A = A + (v0r / s0) * max(s0, 100.0) * 4.0
                     # IMPULSE SPLIT: explosion knockback is external force, not input.
-                    # Ground input caps at ~accel(10)*wishspeed + friction residual ~= 14*MAXV;
-                    # air input is small (TF2 air-accelerate, no friction). Drop, don't learn.
-                    cap = 14.0 * MAXV if gr[lt] > 0.5 else 1500.0
+                    # Ground input caps at ~accel(10)*wishspeed + friction residual
+                    # ~= 14*MAXV; air input is small ONLY in the sense of no
+                    # friction - the accel ceiling is the same 10*MAXV, so the
+                    # air cap is 10*MAXV (NOT 1500: that ate legit air-strafes,
+                    # which must be learned). Drop, don't learn.
+                    cap = (14.0 * MAXV if gr[lt] > 0.5 else 10.0 * MAXV)
                     if float(np.linalg.norm(A)) > cap:
                         n_impulse[0] += 1
+                        audit_imp[cls] += 1
                         continue
                     Y = (R @ (A / MAXV)).astype(np.float32)
                     wt = float(np.clip(sp.mean() / 0.5, 0.1, 1.0))
@@ -152,17 +193,25 @@ for name, did in sorted(demo_id.items(), key=lambda kv: kv[1]):
                         Xev.append(X); Yev.append(Y); Wev.append(wt); Hev.append(H); Kev.append((did, ent, int(t[lt]), cls))
                     else:
                         Xtr.append(X); Ytr.append(Y); Wtr.append(wt); Htr.append(H); Ktr.append((did, ent, int(t[lt]), cls))
+                    audit_keep[cls] += 1
             j = k
 print('class window counts:', dict(sorted(cls_counts.items())), flush=True)
 print('series with varying eye yaw: %d/%d' % (eye_var_moved, eye_var_total), flush=True)
 
 def save(tag, X, Y, W8, H, K):
     X = np.array(X); Y = np.array(Y); W8 = np.array(W8); H = np.array(H); K = np.array(K)
-    np.savez_compressed(os.path.join(OUT, tag + 'B.npz'), X=X, Y=Y, W=W8, H=H)
-    np.savez_compressed(os.path.join(OUT, tag + 'Bk.npz'), K=K)
-    print(tag, X.shape, 'meanW=%.3f' % W8.mean(), flush=True)
+    np.savez_compressed(os.path.join(OUT, tag + SUF + '.npz'), X=X, Y=Y, W=W8, H=H)
+    np.savez_compressed(os.path.join(OUT, tag + SUF + 'k.npz'), K=K)
+    print(tag + SUF, X.shape, 'meanW=%.3f' % W8.mean(), flush=True)
 
-save('train', Xtr, Ytr, Wtr, Htr, Ktr)
+save('train', Xtr, Ytr, Wtr, Htr, Ktr) if not EVAL_ONLY else None
 save('eval', Xev, Yev, Wev, Hev, Kev)
 print('impulse-split dropped samples:', n_impulse[0])
+print('FILTER AUDIT per class: raw -> ok-runs -> candidates -> impulse-dropped -> kept')
+print(' cls |     raw |      ok |    cand |     imp |    kept | kept/raw')
+for c in range(1, 10):
+    r, o, d, im, kp = (audit_raw[c], audit_ok[c], audit_cand[c],
+                       audit_imp[c], audit_keep[c])
+    print(' %3d | %7d | %7d | %7d | %7d | %7d | %.3f' % (
+        c, r, o, d, im, kp, kp / max(r, 1)))
 print('done, no VACUUM (shared DB)')

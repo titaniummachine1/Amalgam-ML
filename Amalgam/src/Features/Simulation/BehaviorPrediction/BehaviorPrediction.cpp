@@ -24,10 +24,12 @@ namespace
 {
 	constexpr float kTickDt = 1.f / 66.f;
 	constexpr int kWarmup = 66;   // 1s warmup tail consumed from the 4s ring
-	constexpr int kRing = 264;    // 4s ring per player (~16KB; 32 players ~= 512KB)
+	// kRing/kHid now live on CBehaviorPrediction (header) so includers see a
+	// complete TargetState; keep local aliases for the .cpp body.
+	constexpr int kRing = CBehaviorPrediction::kRing;
+	constexpr int kHid = CBehaviorPrediction::kHid;
 	constexpr int kMaxRoll = 132;
 	constexpr int kFeat = 14;     // 5 base + 9 class one-hot
-	constexpr int kHid = 96;
 	constexpr float kTeleportHu = 300.f; // step larger than this = spawn/teleport, history reset
 	constexpr float kMoveHu = 0.5f;      // step larger than this = player is walking
 	constexpr int kEngCap = 600;         // LTM engagement cap ticks (mirrors training)
@@ -60,37 +62,7 @@ namespace
 		while (a < -3.14159265f) a += 6.2831853f;
 		return a;
 	}
-}
-
-struct CBehaviorPrediction::TargetState
-{
-	float m_flPos[kRing][3] = {};
-	float m_flEyeYaw[kRing] = {}; // degrees, as training saw them
-	float m_flGrounded[kRing] = {};
-	int m_iClass = 0;
-	int m_iWeaponDef = -1; // active weapon itemdef; -1 = unknown (check skipped)
-	int m_iHead = 0;
-	int m_iCount = 0;
-	float m_flHidden[kHid] = {}; // reserved: incremental hidden update (phase 3 perf)
-
-	// ---- validity: movement history is meaningless until walk begins ----
-	// (post-spawn/death freeze). Frozen ticks stay in the ring (correct "standing"
-	// observation) but do not count as movement history.
-	bool m_bWalkBegan = false;
-	int m_iSinceWalk = 0; // ticks since walk began (cap kRing)
-
-	// ---- LTM scratchpad: O(1) incremental mirror of ml/build_ltm1.py 8 feats ----
-	// Engagement = current consecutive run; frozen at kEngCap (rare; rounds are short).
-	int m_iEng = 0;
-	float m_flTurnSum = 0.f; int m_iTurns = 0;   // strafe bias (mean turn sign)
-	float m_flPrevHeading = 0.f; bool m_bHasHeading = false;
-	int m_iPrevSign = 0; int m_iFlips = 0;       // reversal rate
-	float m_flSpMean = 0.f, m_flSpM2 = 0.f;      // Welford speed
-	float m_flAccMean[2] = {}, m_flAccM2[2] = {}; int m_iAccN = 0; // per-component accel
-	int m_iAir = 0;
-	float m_flEyeMean = 0.f, m_flEyeM2 = 0.f; int m_iEyeN = 0;
-	float m_flPrevVel[2] = {}; bool m_bHasPrevVel = false;
-};
+} // namespace (TargetState defined in header)
 
 void CBehaviorPrediction::Reset(int iEntIndex)
 {
@@ -329,21 +301,17 @@ static int BuildWarmup(const CBehaviorPrediction::TargetState& st, float flMaxV,
 		vx[i] = (ox[i] - ox[i - 1]) / (1.f / 66.f);
 		vy[i] = (oy[i] - oy[i - 1]) / (1.f / 66.f);
 	}
-	// ego frame at newest tick, with velocity-heading fallback (training rule)
+	// ego frame at newest tick: velocity heading when moving, else eye yaw.
+	// Matches B-generation training EXACTLY (which saw frozen eye -> velocity
+	// frame for all moving samples). NEVER use live-eye variance here: in-game
+	// eye moves, training eye was frozen, and mixing frames silently destroys
+	// the rollout (measured in-game 67% vs 98% @100ms from this alone).
 	float flYaw = eye[n - 1];
 	if (!(flYaw == flYaw))
 		flYaw = 0.f;
 	{
-		float m = 0.f;
-		for (int i = 0; i < n; i++)
-			m += eye[i];
-		m /= n;
-		float va = 0.f;
-		for (int i = 0; i < n; i++)
-			va += (eye[i] - m) * (eye[i] - m);
-		va = sqrtf(va / n);
 		const float sp = sqrtf(vx[n - 1] * vx[n - 1] + vy[n - 1] * vy[n - 1]);
-		if (va < 0.5f && sp > 50.f)
+		if (sp > 50.f)
 			flYaw = atan2f(vy[n - 1], vx[n - 1]) * 57.29578f;
 	}
 	const float a = flYaw * 0.01745329f;
@@ -354,13 +322,10 @@ static int BuildWarmup(const CBehaviorPrediction::TargetState& st, float flMaxV,
 		const float evx = (c * vx[i] - s * vy[i]) / flMaxV;
 		const float evy = (s * vx[i] + c * vy[i]) / flMaxV;
 		const float esp = sqrtf(vx[i] * vx[i] + vy[i] * vy[i]) / flMaxV;
-		float dy = 0.f;
-		if (i > 0)
-		{
-			dy = (eye[i] - eye[i - 1]) * 0.01745329f;
-			while (dy > 3.14159265f) dy -= 6.2831853f;
-			while (dy < -3.14159265f) dy += 6.2831853f;
-		}
+		// dyaw feature is ALWAYS zero: B training saw frozen eye (dy==0), and the
+		// GRU column for this slot is untrained random - feeding live eye deltas
+		// injects noise the weights never learned to read. (C models retrain it.)
+		const float dy = 0.f;
 		ouFeat[i][0] = evx;
 		ouFeat[i][1] = evy;
 		ouFeat[i][2] = esp;
@@ -422,6 +387,13 @@ int CBehaviorPrediction::Predict(int iEntIndex, int iTicks, BehaviorPrediction_t
 	const int nStepsC = nSteps > kMaxRoll ? kMaxRoll : nSteps;
 	float v[2] = { feat[n - 1][0] * flMaxV, feat[n - 1][1] * flMaxV };
 	float grLast = feat[n - 1][3];
+	// origin at T (world) + ego->world rotation, for m_vPredicted output
+	const int iT = (st.m_iHead - 1) % kRing;
+	const int iTc = iT < 0 ? iT + kRing : iT;
+	const float flOxT = st.m_flPos[iTc][0], flOyT = st.m_flPos[iTc][1];
+	const float flOzT = st.m_flPos[iTc][2];
+	const float flC = cosf(flYawRad), flS = sinf(flYawRad);
+	float flPx = 0.f, flPy = 0.f;
 	int written = 0;
 	for (int s = 0; s < nStepsC; s++)
 	{
@@ -464,9 +436,14 @@ int CBehaviorPrediction::Predict(int iEntIndex, int iTicks, BehaviorPrediction_t
 		}
 		v[0] += acc[0] * kTickDt;
 		v[1] += acc[1] * kTickDt;
+		flPx += v[0] * kTickDt;
+		flPy += v[1] * kTickDt;
 		pOut[written].m_vAccel.x = acc[0];
 		pOut[written].m_vAccel.y = acc[1];
 		pOut[written].m_vAccel.z = 0.f;
+		pOut[written].m_vPredicted.x = flOxT + flC * flPx - flS * flPy;
+		pOut[written].m_vPredicted.y = flOyT + flS * flPx + flC * flPy;
+		pOut[written].m_vPredicted.z = flOzT;
 		pOut[written].m_flConfidence = 1.f; // value head not yet landed (phase 2)
 		written++;
 

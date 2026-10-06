@@ -118,11 +118,38 @@
 struct BehaviorPrediction_t
 {
 	Vec3 m_vAccel = {};      // policy head: expected acceleration this tick (world units/tick^2, egocentric)
+	Vec3 m_vPredicted = {};  // integrated world position at this rollout step (origin_T + R^T * p_ego)
 	float m_flConfidence = 1.f; // value head 0..1: this rollout is what's gonna happen. Gate release on it.
 };
 
 class CBehaviorPrediction
 {
+public:
+	static constexpr int kRing = 264; // 4s ring per player
+	static constexpr int kHid = 96;
+	struct TargetState
+	{
+		float m_flPos[kRing][3] = {};
+		float m_flEyeYaw[kRing] = {}; // degrees, as training saw them
+		float m_flGrounded[kRing] = {};
+		int m_iClass = 0;
+		int m_iWeaponDef = -1; // active weapon itemdef; -1 = unknown (check skipped)
+		int m_iHead = 0;
+		int m_iCount = 0;
+		float m_flHidden[kHid] = {}; // reserved: incremental hidden update (phase 3 perf)
+		bool m_bWalkBegan = false;
+		int m_iSinceWalk = 0;
+		int m_iEng = 0;
+		float m_flTurnSum = 0.f; int m_iTurns = 0;
+		float m_flPrevHeading = 0.f; bool m_bHasHeading = false;
+		int m_iPrevSign = 0; int m_iFlips = 0;
+		float m_flSpMean = 0.f, m_flSpM2 = 0.f;
+		float m_flAccMean[2] = {}, m_flAccM2[2] = {}; int m_iAccN = 0;
+		int m_iAir = 0;
+		float m_flEyeMean = 0.f, m_flEyeM2 = 0.f; int m_iEyeN = 0;
+		float m_flPrevVel[2] = {}; bool m_bHasPrevVel = false;
+	};
+
 public:
 	void Reset(int iEntIndex = -1);
 	// Per-tick push of fresh server state for a tracked player (cheap, always on).
@@ -146,7 +173,6 @@ public:
 	bool GetLTM(int iEntIndex, float ouFeat[8]) const;
 
 private:
-	struct TargetState;
 	std::unordered_map<int, TargetState> m_mTargets;
 	bool m_bWeightsReady = false;
 	float m_Wih[3 * 96 * 14] = {};

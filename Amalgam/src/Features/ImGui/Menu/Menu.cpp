@@ -300,6 +300,8 @@ void CMenu::MenuAimbot(int iTab)
 						FSlider(Vars::Aimbot::Projectile::AutoRelease);
 					}
 					PopTransparent();
+					FToggle(Vars::Aimbot::Projectile::BehaviorPrediction, FToggleEnum::Left);
+					FToggle(Vars::Aimbot::Projectile::ConfirmShot, FToggleEnum::Right);
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{
@@ -926,7 +928,7 @@ void CMenu::MenuVisuals(int iTab)
 		if (!F::Groups.m_vGroups.empty()
 			&& BeginTable("VisualsESPTable", 2))
 		{
-			iCurrentGroup = std::clamp(iCurrentGroup, 0ui64, F::Groups.m_vGroups.size() - 1);
+			iCurrentGroup = std::clamp(iCurrentGroup, size_t(0), F::Groups.m_vGroups.size() - 1);
 			auto& tGroup = F::Groups.m_vGroups[iCurrentGroup];
 
 			/* Column 1 */
@@ -1346,6 +1348,7 @@ void CMenu::MenuMisc(int iTab)
 					FToggle(Vars::Misc::Movement::ShieldTurnRate, FToggleEnum::Right);
 					FToggle(Vars::Misc::Movement::NoPush, FToggleEnum::Left);
 					FToggle(Vars::Misc::Movement::MovementLock, FToggleEnum::Right);
+					FToggle(Vars::Misc::Movement::MoveLog, FToggleEnum::Left);
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{

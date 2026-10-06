@@ -24,6 +24,12 @@ DT = 1 / 66.0
 HB = 24.0
 W = np.maximum((np.arange(1, 67) / 66.0) ** 1.3718, 0.02).astype(np.float32)
 WT = torch.from_numpy(W)
+_LEN_EPS = 1e-12
+
+
+def slen(v, dim=-1):
+    """sqrt(sum(v^2) + eps): backward-safe vector length (see ml/inputspace)."""
+    return torch.sqrt((v ** 2).sum(dim=dim, keepdim=True) + _LEN_EPS)
 MAXV1 = np.array([400, 300, 240, 280, 320, 230, 300, 300, 300], dtype=np.float32)
 EPOCHS = 4
 
@@ -57,7 +63,7 @@ def load(tag):
 
 
 def apply_friction(v, gr):
-    sp = (v ** 2).sum(-1, keepdim=True).sqrt()
+    sp = slen(v)
     drop = torch.clamp(sp, min=100.0) * 4.0 * DT
     newsp = torch.clamp(sp - drop, min=0.0)
     scale = torch.where(sp > 0, newsp / sp.clamp_min(1e-6), torch.ones_like(sp))
@@ -97,7 +103,7 @@ def unroll(net, xb, s0):
     vth = s0[:, 2:4].clone()
     present = s0[:, 4:5]
     thr_frozen = xb[:, -1:, 14:20]
-    nspd = (vth ** 2).sum(-1, keepdim=True).sqrt() / 3000.0
+    nspd = slen(vth) / 3000.0
     nspd = torch.clamp(nspd, 0.0, 1.0)
     cnt = thr_frozen[:, 0, 3:4]
     mem = thr_frozen[:, 0, 4:5]
@@ -110,16 +116,18 @@ def unroll(net, xb, s0):
         # advance threat, recompute live feats
         q = q + vth * DT
         rel = q - p
-        dist = rel.norm(dim=1, keepdim=True).clamp_min(1e-6)
+        dist = slen(rel, dim=1).clamp_min(1e-6)
         ndist = torch.clamp(dist / 2000.0, 0.0, 1.0)
         ang = torch.atan2(rel[:, 1:2], rel[:, 0:1])
         infov = (ang.abs() < (np.pi / 4)).float()
         appr = -((vth - v) * rel).sum(-1, keepdim=True) / dist
-        tti = torch.where(appr > 50.0, torch.clamp(dist / appr / 5.0, 0.0, 1.0),
+        # NOTE: appr clamped before dividing (torch.where does not protect 0/0 in
+        # backward; measured NaN grads). Forward values unchanged (gate is >50).
+        tti = torch.where(appr > 50.0, torch.clamp(dist / appr.clamp_min(1e-9) / 5.0, 0.0, 1.0),
                           torch.ones_like(dist))
         live = torch.cat([ndist, nspd, infov, cnt, mem, tti], dim=-1).unsqueeze(1)
         thr = present.unsqueeze(1) * live + (1.0 - present.unsqueeze(1)) * thr_frozen
-        sp = (v ** 2).sum(-1, keepdim=True).sqrt() / mv.squeeze(1)
+        sp = slen(v) / mv.squeeze(1)
         dyn = torch.cat([(v / mv.squeeze(1)).unsqueeze(1), sp.unsqueeze(1),
                          gr.unsqueeze(1), torch.zeros_like(sp).unsqueeze(1),
                          thr], dim=-1)
@@ -165,7 +173,14 @@ for ep in range(EPOCHS):
         sb = torch.from_numpy(np.array(Str[idx]))
         opt.zero_grad()
         loss = dense_loss(net, xb, sb, HtrD[idx], VtrD[idx])
+        if not np.isfinite(loss.item()):
+            log({'type': 'SKIP-NONFINITE', 'ep': ep, 'batch': i})
+            continue
         loss.backward()
+        if not all(torch.isfinite(p.grad).all().item()
+                   for p in net.parameters() if p.grad is not None):
+            log({'type': 'SKIP-NONFINITE-GRAD', 'ep': ep, 'batch': i})
+            continue
         torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
         opt.step()
         bl.append(loss.item())

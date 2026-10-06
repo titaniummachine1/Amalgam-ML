@@ -12,7 +12,8 @@ D = os.path.join(os.path.expanduser('~'), 'Downloads', 'mge_ds')
 DS = D
 DT = 1 / 66.0
 TELEPORT = 300.0
-con = sqlite3.connect(os.path.join(DS, 'dataset_all.db'))
+EYE_FRAME = os.environ.get('EYE_FRAME', '0') == '1'
+con = sqlite3.connect(os.path.join(DS, os.environ.get('ML_DB', 'dataset_all.db')))
 
 
 def build(tag):
@@ -58,13 +59,16 @@ def build(tag):
             jT = pos.get(t)
             if jT is None or jT < 66:
                 continue
-            # R identical to build_ds_all.py
+            # R identical to build_ds_all.py (no threshold: velocity when moving).
             vlt = np.array([ox[jT] - ox[jT - 1], oy[jT] - oy[jT - 1]]) / DT
-            wy = ey[jT - 65:jT + 1]
             yaw = ey[jT]
             if not np.isfinite(yaw):
                 yaw = 0.0
-            if np.nanstd(wy) < 0.5 and np.linalg.norm(vlt) > 50:
+            if EYE_FRAME:
+                if not np.isfinite(ey[jT]):
+                    yaw = (np.rad2deg(np.arctan2(vlt[1], vlt[0]))
+                           if np.linalg.norm(vlt) > 1.0 else 0.0)
+            elif np.linalg.norm(vlt) > 50:
                 yaw = np.rad2deg(np.arctan2(vlt[1], vlt[0]))
             a = np.deg2rad(yaw)
             c, sn = np.cos(-a), np.sin(-a)

@@ -1,9 +1,11 @@
 #include <Windows.h>
 #include "Core/Core.h"
 #include "Utils/ExceptionHandler/ExceptionHandler.h"
+#include "Utils/BootLog/BootLog.h"
 
 DWORD WINAPI MainThread(LPVOID lpParam)
 {
+	BootLog("BOOT main-thread");
 	U::ExceptionHandler.Initialize(lpParam);
 
 	U::Core.Load();
