@@ -620,6 +620,27 @@ static inline void HandleFace(Face_t& tFace, std::vector<Setup_t>& vPoints, floa
 			if (bInside && I::EngineTrace->GetPointContents(vPoint) & MASK_SOLID)
 				continue;
 
+			// backface cull: the splash face must face the SHOT pos (muzzle with
+			// weapon offset, NOT the eye - rockets spawn beside corners and
+			// can still reach what the eye can't see). A normal pointing away
+			// (dot > 0) means the point sits on the far side of thin geometry
+			// from the muzzle - our rocket hits the near face first, never
+			// this point. Cull it before the visibility trace (saves it too).
+			{
+				Vec3 vDir = (vPoint - (m_tInfo.m_vLocalEye + m_tInfo.m_vOffset)).Normalized();
+				if (vDir.Dot(tFace.m_vNormal) > 0.f)
+					continue;
+			}
+			// second pass, target side: the face must also face the target's
+			// AABB center (splash is evaluated against the center). A normal
+			// pointing away from the center (dot < 0) puts the surface itself
+			// between explosion and target - the splash trace would fail.
+			// Floor/ceiling/side splashes pass (normal toward target side).
+			{
+				if ((vTargetCenter - vPoint).Dot(tFace.m_vNormal) < 0.f)
+					continue;
+			}
+
 			int nSubMask = nMask;
 			if (!bInside)
 				vNormal = (vTargetEye - vPoint).Normalized(), nSubMask &= ~CONTENTS_MOVEABLE;
