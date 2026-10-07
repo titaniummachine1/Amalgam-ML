@@ -69,7 +69,10 @@ def dense_loss(net, xb, Hb, Vb):
     traj = unroll(net, xb)
     tgt = torch.from_numpy(np.array(Hb))
     m = torch.from_numpy(np.array(Vb)).unsqueeze(-1).float()
-    err = torch.abs(traj - tgt).amax(dim=-1, keepdim=True)
+    # GUARD (2026-10-07): see train_denseD.py - NaN targets on invalid ticks
+    # poison the masked sum via NaN*0=NaN. Sanitize before masking; valid
+    # ticks unaffected.
+    err = torch.abs(traj - tgt).amax(dim=-1, keepdim=True).nan_to_num(0.0)
     inside = (err <= HB).float()
     lin = torch.log((err + 1.0) / (HB + 1.0)) * inside
     lout = 4.0 * ((err - HB) / HB).clamp_min(0.0) ** 2 * (1.0 - inside)

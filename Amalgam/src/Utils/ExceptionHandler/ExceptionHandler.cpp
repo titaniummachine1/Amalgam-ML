@@ -26,6 +26,11 @@ struct Frame_t
 static PVOID s_pHandle;
 static LPVOID s_lpParam;
 static int s_iExceptions = 0;
+// NOTE: plain static, NOT thread_local. A TLS directory in this DLL kills
+// manual-map injection (deterministic ntdll AV on inject, measured
+// 2026-10-07). The silence window is milliseconds during map load; a
+// coincident AV on another thread skipping its log is the accepted tradeoff.
+static int s_iSilent = 0;
 
 static inline std::deque<Frame_t> StackTrace(PCONTEXT pContext)
 {
@@ -110,6 +115,12 @@ static LONG APIENTRY ExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo)
 	case DBG_THREAD_NAMING: return EXCEPTION_CONTINUE_SEARCH;
 	}
 
+	// Silence window held by guarded code on this thread: don't log, don't
+	// pop a dialog, just let SEH handlers recover. Real crashes on other
+	// threads still go through the full logging path below.
+	if (s_iSilent > 0)
+		return EXCEPTION_CONTINUE_SEARCH;
+
 	if (!Vars::Debug::CrashLogging.Value)
 		return EXCEPTION_CONTINUE_SEARCH;
 
@@ -189,4 +200,17 @@ void CExceptionHandler::Initialize(LPVOID lpParam)
 void CExceptionHandler::Unload()
 {
 	RemoveVectoredExceptionHandler(s_pHandle);
+}
+void CExceptionHandler::PushSilent()
+{
+	s_iSilent++;
+}
+void CExceptionHandler::PopSilent()
+{
+	if (s_iSilent > 0)
+		s_iSilent--;
+}
+bool CExceptionHandler::IsSilent()
+{
+	return s_iSilent > 0;
 }

@@ -387,6 +387,12 @@ int CBehaviorPrediction::Predict(int iEntIndex, int iTicks, BehaviorPrediction_t
 	const int nStepsC = nSteps > kMaxRoll ? kMaxRoll : nSteps;
 	float v[2] = { feat[n - 1][0] * flMaxV, feat[n - 1][1] * flMaxV };
 	float grLast = feat[n - 1][3];
+	// Air-coast blend (ml/eval_air_slice.py verdict: ramp [20,33] gated on
+	// airborne@T). Policy owns 7/13/20 everywhere; coast wins 33/66 on air
+	// (landing discontinuity). Blend per-step ego positions toward the
+	// straight-line coast; grounded rollouts untouched.
+	const float v0x = v[0], v0y = v[1];
+	const bool bAirT = grLast < 0.5f;
 	// origin at T (world) + ego->world rotation, for m_vPredicted output
 	const int iT = (st.m_iHead - 1) % kRing;
 	const int iTc = iT < 0 ? iT + kRing : iT;
@@ -438,6 +444,14 @@ int CBehaviorPrediction::Predict(int iEntIndex, int iTicks, BehaviorPrediction_t
 		v[1] += acc[1] * kTickDt;
 		flPx += v[0] * kTickDt;
 		flPy += v[1] * kTickDt;
+		if (bAirT && s >= 19)
+		{
+			float w = (float(s + 1) - 20.f) / 13.f;
+			if (w > 1.f) w = 1.f;
+			const float t = float(s + 1) * kTickDt;
+			flPx = flPx * (1.f - w) + (v0x * t) * w;
+			flPy = flPy * (1.f - w) + (v0y * t) * w;
+		}
 		pOut[written].m_vAccel.x = acc[0];
 		pOut[written].m_vAccel.y = acc[1];
 		pOut[written].m_vAccel.z = 0.f;
