@@ -43,6 +43,25 @@ static inline int GetMoveMode(CTFPlayer* pPlayer)
 	return MoveEnum::Air;
 }
 
+// Ported from Rijin entity_prediction.cpp calc_frame_velocity:
+// ducking shifts collision OBB 82->62, teleporting origin 20hu in 1 tick and
+// spiking velocity. One bad record poisons strafe average/hitchance, so reject it.
+static inline bool IsSpikeRecord(const Vec3& vOrigin, const Vec3& vVelocity, MoveData* pLastRecord, float flCurSimTime)
+{
+	if (!pLastRecord)
+		return false;
+
+	const int iTicks = std::max(TIME_TO_TICKS(flCurSimTime - pLastRecord->m_flSimTime), 1);
+	const Vec3 vDelta = (vOrigin - pLastRecord->m_vOrigin) / float(iTicks);
+	if (fabsf(vDelta.z) >= 20.f || fabsf(vDelta.x) >= 100.f || fabsf(vDelta.y) >= 100.f)
+		return true;
+
+	if (vVelocity.Length2D() > 3500.f)
+		return true;
+
+	return false;
+}
+
 static inline void HandleMovement(CTFPlayer* pPlayer, MoveData* pLastRecord, MoveData& tCurRecord, std::deque<MoveData>& vRecords)
 {
 	bool bLocal = pPlayer->entindex() == I::EngineClient->GetLocalPlayer();
@@ -123,6 +142,11 @@ void CMovementSimulation::Store()
 		Vec3 vDirection = vVelocity.To2D();
 
 		MoveData* pLastRecord = !vRecords.empty() ? &vRecords.front() : nullptr;
+		if (IsSpikeRecord(vOrigin, vVelocity, pLastRecord, pPlayer->m_flSimulationTime()))
+		{
+			vRecords.clear();
+			continue;
+		}
 		vRecords.emplace_front(
 			vDirection,
 			pPlayer->m_flSimulationTime(),
@@ -171,6 +195,11 @@ void CMovementSimulation::StorePlayer(CTFPlayer* pPlayer, CMoveData& tMoveData, 
 	Vec3 vDirection = Math::RotatePoint({ tMoveData.m_flForwardMove, -tMoveData.m_flSideMove, tMoveData.m_flUpMove }, {}, { 0, tMoveData.m_vecViewAngles.y, 0 });
 
 	MoveData* pLastRecord = !vRecords.empty() ? &vRecords.front() : nullptr;
+	if (IsSpikeRecord(vOrigin, vVelocity, pLastRecord, flTime))
+	{
+		vRecords.clear();
+		return;
+	}
 	vRecords.emplace_front(
 		vDirection,
 		flTime,
