@@ -992,6 +992,13 @@ static inline bool GetAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int i
 	float flVelocity = tInfo.m_flVelocity;
 	float flGrav = tInfo.m_flGravity;
 	Vec3 vDelta = vTargetPos - vLocalPos;
+	// Degenerate solver inputs (dead weapon info, target exactly at eye
+	// level origin, NaN state) produce inf/NaN pitch and time below.
+	// Reject here instead of letting them poison solution history.
+	if (!std::isfinite(flVelocity) || flVelocity <= FLT_EPSILON
+		|| !std::isfinite(flGrav)
+		|| !std::isfinite(vDelta.x) || !std::isfinite(vDelta.y) || !std::isfinite(vDelta.z))
+		return false;
 	float flDist = vDelta.Length2D();
 	float flDrag = GetDrag(flVelocity, F::ProjSim.m_pCurrent, iFlags);
 
@@ -1037,6 +1044,11 @@ static inline bool GetAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int i
 	if (Vars::Aimbot::Projectile::TimeOverride.Value)
 		flTime *= Vars::Aimbot::Projectile::TimeOverride.Value;
 
+	// Closed-form miss (target directly overhead, zero horizontal lever
+	// arm, drag collapse): time/pitch go NaN/inf/negative. Not a solution.
+	if (!std::isfinite(flPitch) || !std::isfinite(flYaw) || !std::isfinite(flTime) || flTime < 0.f)
+		return false;
+
 	return true;
 }
 
@@ -1058,6 +1070,12 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 		tOut.m_flTime -= m_tInfo.m_flOffsetTime;
 		tOut.m_flPitch = flPitch = -Math::Rad2Deg(flPitch) - m_tInfo.m_vAngFix.x;
 		tOut.m_flYaw = flYaw -= m_tInfo.m_vAngFix.y;
+	}
+
+	if (!std::isfinite(flPitch) || !std::isfinite(flYaw) || !std::isfinite(tOut.m_flTime))
+	{
+		tOut.m_iCalculated = CalculateResultEnum::Bad;
+		return;
 	}
 
 	int iTimeTo = ceilf(tOut.m_flTime / TICK_INTERVAL);
@@ -1154,6 +1172,11 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 		}
 	}
 
+	if (!std::isfinite(tOut.m_flPitch) || !std::isfinite(tOut.m_flYaw) || !std::isfinite(tOut.m_flTime))
+	{
+		tOut.m_iCalculated = CalculateResultEnum::Bad;
+		return;
+	}
 	iTimeTo = ceilf(tOut.m_flTime / TICK_INTERVAL);
 	bGood = iTolerance != -1 ? abs(iTimeTo - iSimTime) <= iTolerance : iTimeTo <= iSimTime;
 	tOut.m_iCalculated = bGood ? CalculateResultEnum::Good : CalculateResultEnum::Time;
@@ -1427,10 +1450,17 @@ bool CAimbotProjectile::HandlePoint(const Vec3& vOrigin, int iSimTime, float flP
 	int iOriginalSimTime = iSimTime;
 	if (m_tInfo.m_iArmTime && iType == PointTypeEnum::Geometry || m_tInfo.m_bIgnoreTiming && iFlags == PointFlagsEnum::Lob)
 	{
-		if (flTime > m_tProjInfo.m_flLifetime)
+		if (!std::isfinite(flTime) || flTime < 0.f || flTime > m_tProjInfo.m_flLifetime)
 			return false;
 
 		iSimTime = std::ceil(flTime / I::GlobalVars->interval_per_tick); //TIME_TO_TICKS(flTime);
+		// Hard cap: lob/ignore-timing solutions used to re-derive tick counts
+		// from raw flight time with no upper bound, simulating (and tracing)
+		// hundreds of ticks past MaxSimulationTime. Never exceed it.
+		const int iHardMax = TIME_TO_TICKS(std::min(m_tProjInfo.m_flLifetime, Vars::Aimbot::Projectile::MaxSimulationTime.Value))
+			+ TIME_TO_TICKS(m_tInfo.m_flLatency) + 2;
+		if (iSimTime > iHardMax)
+			return false;
 	}
 
 	if (!m_tInfo.m_pProjectile
@@ -1855,6 +1885,11 @@ bool CAimbotProjectile::Aim(const Vec3& vCurAngle, const Vec3& vToAngle, Vec3& v
 // assume angle calculated outside with other overload
 void CAimbotProjectile::Aim(CUserCmd* pCmd, Vec3& vAngles, int iMethod)
 {
+	// A non-finite angle must never reach the command (nor the screen).
+	// Anti-aim runs on its own path and is unaffected by this gate.
+	if (!std::isfinite(vAngles.x) || !std::isfinite(vAngles.y) || !std::isfinite(vAngles.z))
+		return;
+
 	bool bUnsure = F::Ticks.IsTimingUnsure();
 	switch (iMethod)
 	{
@@ -2169,14 +2204,14 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 		DrawVisuals(iResult, tTarget, m_vPlayerPath, m_vProjectilePath, m_vBoxes);
 
 		Aim(pCmd, tTarget.m_vAngleTo);
-		// Confirm-or-hold: if WE added fire this tick (user NOT holding M1) the
+		// Fire validation: if WE added fire this tick (user NOT holding M1) the
 		// stored SIMULATED projectile path (gravity + bounces, computed by
 		// ProjSim for this exact solution) must still reach the target's
-		// current predicted AABB within splash slack. Stale solutions (target
-		// moved/died/went dormant since the solve, record drift) become holds.
+		// current predicted AABB within splash slack. Same-tick entity state
+		// is frozen, so this is same-solution consistency, not a second
+		// alive/death check. Invalid solutions become holds.
 		// Manual fire is never touched.
-		if (!bUserFiring && (pCmd->buttons & IN_ATTACK)
-			&& Vars::Aimbot::Projectile::ConfirmShot.Value)
+		if (!bUserFiring && (pCmd->buttons & IN_ATTACK))
 		{
 			bool bConfirmed = false;
 			auto pTarg = (tTarget.m_pEntity && tTarget.m_pEntity->IsPlayer())
