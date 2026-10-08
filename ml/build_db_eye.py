@@ -45,16 +45,23 @@ for f in files:
         print('skip (in DB)', name, flush=True)
         continue
     batch = []
+    wfill = {}  # checkpoint fill: wcls emitted only on change; dense in DB
     with open(f) as fh:
         for row in csv.DictReader(fh):
             if row['life'] != '0':
                 continue
             try:
-                batch.append((did, int(row['ent']), int(row['tick']),
+                ent = int(row['ent'])
+                w = (row.get('wcls') or '').strip()[:64]
+                if w:
+                    wfill[ent] = w
+                else:
+                    w = wfill.get(ent, '')
+                batch.append((did, ent, int(row['tick']),
                               float(row['ox']), float(row['oy']), float(row['oz']),
                               1 if (int(row['flags']) & 1) else 0,
                               float(row['eyey']), int(row['class']),
-                              float(row['eyep']), (row.get('wcls') or '')[:64]))
+                              float(row['eyep']), w))
             except ValueError:
                 continue
     con.executemany('INSERT OR IGNORE INTO ticks VALUES (?,?,?,?,?,?,?,?,?,?,?)', batch)

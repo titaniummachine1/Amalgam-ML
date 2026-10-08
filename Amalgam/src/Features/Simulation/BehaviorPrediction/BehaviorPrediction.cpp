@@ -42,8 +42,14 @@ namespace
 		switch (iClsID)
 		{
 		case int(ETFClassID::CTFRocketLauncher): *pSlot = 0; *pCls = 1.f / kWClsScale; break;
-		case int(ETFClassID::CTFShotgun_Soldier): *pSlot = 1; *pCls = 2.f / kWClsScale; break;
-		case int(ETFClassID::CTFShovel): *pSlot = 2; *pCls = 3.f / kWClsScale; break;
+		case int(ETFClassID::CTFRocketLauncher_DirectHit): *pSlot = 0; *pCls = 2.f / kWClsScale; break;
+		case int(ETFClassID::CTFRocketLauncher_AirStrike): *pSlot = 0; *pCls = 3.f / kWClsScale; break;
+		case int(ETFClassID::CTFParticleCannon): *pSlot = 0; *pCls = 4.f / kWClsScale; break;
+		case int(ETFClassID::CTFShotgun_Soldier): *pSlot = 1; *pCls = 5.f / kWClsScale; break;
+		case int(ETFClassID::CTFBuffItem): *pSlot = 1; *pCls = 6.f / kWClsScale; break;
+		case int(ETFClassID::CTFShovel): *pSlot = 2; *pCls = 7.f / kWClsScale; break;
+		case int(ETFClassID::CTFKatana): *pSlot = 2; *pCls = 8.f / kWClsScale; break;
+		case int(ETFClassID::CTFSword): *pSlot = 2; *pCls = 9.f / kWClsScale; break;
 		default: break; // unknown weapon: zeros (pre-weapon behavior)
 		}
 	}

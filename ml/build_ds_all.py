@@ -27,13 +27,20 @@ EYE_FRAME = os.environ.get('EYE_FRAME', '0') == '1'
 # share CTFShovel: accepted blur, documented. C++ BuildWarmup mirrors this
 # EXACTLY (same table, live entity class name; defid ignored for parity).
 WEAPON_DIMS = os.environ.get('WEAPON_DIMS', '0') == '1'
-# (slot, class_id). Soldier table v1: classes OBSERVED in MGE dumps.
-# Unknown classes -> (None, 0): all-zero slot + zero scalar (safe default,
-# identical to pre-weapon behavior). Extend per class when data shows need.
+# (slot, class_id). Soldier table v1: classes OBSERVED on cls=3 rows in
+# dataset_eye.db (2026-10-08 census). Unknown classes -> (None, 0):
+# all-zero slot + zero scalar (safe default, identical to pre-weapon
+# behavior). MG/stock/Disciplinary/Equalizer share CTFShovel (accepted blur).
 WCLASS = {
     'CTFRocketLauncher': (0, 1),
-    'CTFShotgun_Soldier': (1, 2),
-    'CTFShovel': (2, 3),
+    'CTFRocketLauncher_DirectHit': (0, 2),
+    'CTFRocketLauncher_AirStrike': (0, 3),
+    'CTFParticleCannon': (0, 4),
+    'CTFShotgun_Soldier': (1, 5),
+    'CTFBuffItem': (1, 6),
+    'CTFShovel': (2, 7),
+    'CTFKatana': (2, 8),
+    'CTFSword': (2, 9),
 }
 WCLS_SCALE = 16.0
 

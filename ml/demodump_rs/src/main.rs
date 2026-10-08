@@ -8,6 +8,7 @@ use tf_demo_parser::demo::header::Header;
 use tf_demo_parser::demo::message::{Message, MessageType};
 use tf_demo_parser::demo::parser::{DemoParser, MessageHandler, ParserState};
 use tf_demo_parser::demo::packet::datatable::{ParseSendTable, ServerClass};
+use tf_demo_parser::demo::packet::stringtable::StringTableEntry;
 use tf_demo_parser::demo::sendprop::{SendPropIdentifier, SendPropValue};
 use tf_demo_parser::Demo;
 
@@ -65,6 +66,10 @@ struct Dump {
     // printed at the end of every run so a dead column is visible immediately.
     live: HashMap<usize, [u64; 4]>,
     last: HashMap<usize, (i64, i64, i64, u32)>, // quantized (ox, oy, ey), mspd bits
+    // modelprecache index -> path (debug/probe use; see DUMP_MODELS).
+    models: HashMap<usize, String>,
+    // wcls checkpoint state: last emitted weapon class per entity.
+    wlast: HashMap<usize, String>,
 }
 
 fn xy(
@@ -239,6 +244,31 @@ impl Dump {
             }
         }
         (p, y)
+    }
+
+    // Active weapon class: m_hActiveWeapon (DT_BaseCombatCharacter),
+    // entity index = handle & 0x7FF (TF2 MAX_EDICTS 2048; verified 2026-10-08:
+    // 0xFFF mask misses, 0x7FF resolves CTFRocketLauncher). Returns the
+    // weapon entity's server class ("" = unknown/none).
+    // BOUNDARIES (all verified 2026-10-08, don't re-litigate):
+    // - m_hMyWeapons is NOT networked in STV demos (absent from player props),
+    //   so per-slot loadout IDs are unobtainable; active slot comes from the
+    //   class->slot table downstream (ml/build_ds_all.py WCLASS).
+    // - EconItemView/defindex sub-table is stripped from STV sendtables.
+    // - m_nModelIndex / m_iWorldModelIndex on weapon entities are POLLUTED in
+    //   STV (arms parenting + stale values: soldier rocket -> pyro_arms,
+    //   shovel -> w_rocket, while other ticks resolve correctly). Exact-model
+    //   identity (MG vs stock) is UNRECOVERABLE from STV demos. MG vs stock
+    //   share CTFShovel: accepted blur. Slot signal (melee OUT) is the shippable bit.
+    fn weapons(&self, e: &Ent) -> String {
+        let h = i64_of(&e.props, "DT_BaseCombatCharacter", "m_hActiveWeapon");
+        if h <= 0 {
+            return String::new();
+        }
+        self.ents
+            .get(&((h as usize) & 0x7FF))
+            .map(|we| we.class.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -464,6 +494,29 @@ impl MessageHandler for Dump {
                 }
             }
             // snapshot players after applying this message
+            if std::env::var("DUMP_MODELS").is_ok() && (u32::from(tick) % 500) < 2 {
+                for (idx2, e2) in self.ents.iter() {
+                    if e2.class != "CTFPlayer" || *idx2 > 6 {
+                        continue;
+                    }
+                    let h = i64_of(&e2.props, "DT_BaseCombatCharacter", "m_hActiveWeapon");
+                    let mut extra = String::new();
+                    if h > 0 {
+                        if let Some(we) = self.ents.get(&((h as usize) & 0x7FF)) {
+        let mi = i64_of(&we.props, "DT_BaseCombatWeapon", "m_iWorldModelIndex");
+        let mi = if mi > 0 { mi } else {
+            // fallback: base index (usually arms/viewmodel: less exact)
+            i64_of(&we.props, "DT_BaseEntity", "m_nModelIndex")
+        };
+                            let wi = i64_of(&we.props, "DT_BaseCombatWeapon", "m_iWorldModelIndex");
+                            let mp = if mi > 0 { self.models.get(&(mi as usize)).cloned().unwrap_or_default() } else { String::new() };
+                            let wp = if wi > 0 { self.models.get(&(wi as usize)).cloned().unwrap_or_default() } else { String::new() };
+                            extra = format!(" wcls={} mi={}:{} wi={}:{}", we.class, mi, mp, wi, wp);
+                        }
+                    }
+                    println!("WMOD tick={} ent={}{}", u32::from(tick), idx2, extra);
+                }
+            }
             // class labels via CTFPlayerResource m_iPlayerClass[idx] (flattened array elements)
             let mut res_props: Option<&HashMap<SendPropIdentifier, SendPropValue>> = None;
             for e in self.ents.values() {
@@ -555,8 +608,22 @@ impl MessageHandler for Dump {
                         );
                     }
                 }
+                // wcls checkpoint encoding: emit the class ONLY on change per
+                // entity (else ""). Loadout switches are rare; this keeps the
+                // column near-empty in CSVs. Loader forward-fills in tick
+                // order, so the DB stays dense. First sight always emits.
+                let wc = {
+                    let cur = self.weapons(e);
+                    match self.wlast.get(idx) {
+                        Some(prev) if *prev == cur => String::new(),
+                        _ => {
+                            self.wlast.insert(*idx, cur.clone());
+                            cur
+                        }
+                    }
+                };
                 let line = format!(
-                    "{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{}\n",
+                    "{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{},{}\n",
                     u32::from(tick),
                     idx,
                     cls,
@@ -574,6 +641,7 @@ impl MessageHandler for Dump {
                     i64_of(&e.props, "DT_BasePlayer", "m_lifeState"),
                     i64_of(&e.props, "DT_BaseEntity", "m_iTeamNum"),
                     fr,
+                    wc,
                 );
                 self.out.write_all(line.as_bytes()).unwrap();
                 self.rows += 1;
@@ -602,7 +670,42 @@ impl MessageHandler for Dump {
     }
 
     fn handle_header(&mut self, _header: &Header) {}
+    fn handle_string_entry(
+        &mut self,
+        table: &str,
+        index: usize,
+        entries: &StringTableEntry,
+        _parser_state: &ParserState,
+    ) {
+        if table == "modelprecache" {
+            if let Some(t) = &entries.text {
+                self.models.insert(index, t.to_string());
+            }
+        }
+    }
     fn into_output(self, _state: &ParserState) -> Self::Output {
+        if std::env::var("DUMP_MODELS").is_ok() {
+            // precache census: does modelprecache resolve weapon indices?
+            // spot-check the exact indices seen on live weapons.
+            for probe in [189usize, 866usize] {
+                eprintln!("PROBE midx={} -> {:?}", probe,
+                    self.models.get(&probe));
+            }
+            // precache census: does modelprecache resolve weapon indices?
+            let mut hits: Vec<String> = Vec::new();
+            for (i, s) in self.models.iter() {
+                let l = s.to_lowercase();
+                if l.contains("weapon") || l.contains("shovel") || l.contains("rocket")
+                    || l.contains("gardener") || l.contains("shotgun") {
+                    hits.push(format!("{}={}", i, s));
+                }
+            }
+            hits.sort();
+            eprintln!("MODELS total={} weapon-ish={}", self.models.len(), hits.len());
+            for h in hits.iter().take(30) {
+                eprintln!("  {}", h);
+            }
+        }
         let mut ids: Vec<usize> = self.live.keys().cloned().collect();
         ids.sort_unstable();
         for idx in ids {
@@ -678,8 +781,8 @@ fn main() {
     let pout = BufWriter::new(File::create(&ppath).expect("create proj csv"));
     let demo = Demo::new(&data);
     let stream = demo.get_stream();
-    let mut d = Dump { ents: HashMap::new(), out, pout, rows: 0, live: HashMap::new(), last: HashMap::new() };
-    let header_out = format!("tick,ent,class,ox,oy,oz,vx,vy,vz,eyep,eyey,mspd,flags,health,life,team,fresh\n");
+    let mut d = Dump { ents: HashMap::new(), out, pout, rows: 0, live: HashMap::new(), last: HashMap::new(), models: HashMap::new(), wlast: HashMap::new() };
+    let header_out = format!("tick,ent,class,ox,oy,oz,vx,vy,vz,eyep,eyey,mspd,flags,health,life,team,fresh,wcls\n");
     d.out.write_all(header_out.as_bytes()).unwrap();
     d.pout.write_all(b"tick,ent,class,ox,oy,oz,vx,vy,vz,team,fresh\n").unwrap();
     let parser = DemoParser::new_all_with_analyser(stream, d);
