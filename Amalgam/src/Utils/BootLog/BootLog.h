@@ -19,7 +19,7 @@ inline void BootLog(const char* stage)
 	int i = 0;
 	for (const char* p = tmp; *p && i < MAX_PATH - 24; p++)
 		path[i++] = *p;
-	const char* tail = "amalgam_boot.log\n";
+	const char* tail = "amalgam_boot.log";
 	for (const char* p = tail; *p && i < MAX_PATH - 1; p++)
 		path[i++] = *p;
 	path[i] = 0;

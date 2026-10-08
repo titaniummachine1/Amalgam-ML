@@ -1,20 +1,13 @@
 #pragma once
 #include "../../../SDK/SDK.h"
 
-// CSmartJump: minecraft-style jump assistance, one mode at a time
-// (Vars::Misc::Movement::SmartJump: Off / Auto jump / Smart jump).
-// - Auto jump (reactive): intent wishdir, slide-projection probe loop with
-//   our live AABB (1u out, top derived from the measured arc, sweep down).
-//   Sheer walls are slid along (up to 8), steps ignored, then the smallest
-//   sufficient jump fires: regular, else duck, else nothing. All heights are
-//   engine-measured per tick (live gravity, real duck behavior), no constants.
-// - Smart jump (predictive): coasts the current motion with the aimbot's
-//   movement sim up to the measured jump peak, probes the wall found there,
-//   and jumps on the latest tick whose measured arc still clears it.
-// - Prediction never touches the live player beyond the shared sim's
-//   save/sim/restore (same facility the aimbot uses on enemies): SimGuard
-//   restores on every path, including init-fail, and re-saves the exact
-//   live fields Initialize mutates. Probes are read-only SDK traces.
+// CSmartJump: minecraft-style auto jump (Vars::Misc::Movement::AutoJump).
+// Intent wishdir, slide-projection probe loop with our live AABB (1u out,
+// fixed probe top, sweep down). Sheer walls are slid along (up to 8),
+// steps ignored, then the smallest sufficient jump fires once per obstacle:
+// regular, else the scripted ctap sequence, else nothing. Traces only, no
+// movement sims: the live player is only ever READ (origin, hull), never
+// written; the only writes are jump/duck bits in the cmd.
 class CSmartJump
 {
 private:
@@ -29,12 +22,17 @@ private:
 	// full crouch tick first, then unduck+jump from ducked state.
 	int m_iDuckSeq = 0;
 	float m_flSeqNeed = 0.f;
+	// Fire cooldown: grinding an obstacle must not machine-gun jump/duck
+	// every tick (crouch flicker freezes the body anim). Absolute floor
+	// of 10 ticks between fire starts; the need-edge gate in RunAuto
+	// decides the rest. Stairs still climb: every step is a new edge.
+	int m_iLastFireTick = 0;
+	// Edge latch: the need height that caused the last fire. The same wall
+	// held afterward stays quiet (no machine-gun); a new height, a new
+	// obstacle, or a patient retry re-arms.
+	float m_flLastNeed = -1.f;
 
-	// Engine-measured jump arc with extra buttons held (0 or IN_DUCK).
-	// Returns the apex tick (0 = no useful arc); fills pArc[1..apex] with
-	// heights above the start origin. Uses the aimbot's movement sim with
-	// full restore; live gravity and real duck behavior, no constants.
-	int SimJumpArc(CTFPlayer* pLocal, CUserCmd* pCmd, int iExtraButtons, float* pArc, int iMaxTicks);
+	// (no movement sims: probe top and jump type use static game facts)
 	// Obstacle probe: 1u into the wall along vPush, 72u up, hull-trace
 	// down with our AABB. Returns height above feet, or -1 when steppable
 	// (<= sv_stepsize), taller than 72u, or open air. Never jumps on -1.
@@ -43,9 +41,11 @@ private:
 	void ArmGrab(CTFPlayer* pLocal, float flNeed);
 
 public:
+	// Ctap tick two (armed by auto): crouched last tick, launch now.
+	// Returns true when it handled the tick (skip the normal logic).
+	bool RunSeq(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd);
-	void RunSmart(CTFPlayer* pLocal, CUserCmd* pCmd);
-	// Airborne companion to the jump modes: ledge grab only (the tuck itself
+	// Airborne companion to auto jump: ledge grab only (the tuck itself
 	// lives in CMisc::AirDuck, which runs earlier). Ascending past the
 	// recorded obstacle top with a confirmed surface below releases duck,
 	// standing you onto the surface instead of falling back down.

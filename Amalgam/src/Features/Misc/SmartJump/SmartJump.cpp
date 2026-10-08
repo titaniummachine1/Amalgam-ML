@@ -1,99 +1,33 @@
 #include "SmartJump.h"
 
 #include "../../Aimbot/AutoRocketJump/AutoRocketJump.h"
-#include "../../Simulation/MovementSimulation/MovementSimulation.h"
+#include "../../Ticks/Ticks.h"
 #include "../../../Utils/BootLog/BootLog.h"
 
 // sv_stepsize default: the engine auto-steps anything at/below this, no jump needed
 #define SJ_STEP 18.f
-// extra clearance so the arc doesn't clip the lip on the way over
+// extra clearance so the jump doesn't clip the lip on the way over
 #define SJ_CLEAR 4.f
-#define SJ_MAXTICKS 66
+// Traces only, no movement sims: static game facts. Regular jump apex
+// (72u) decides regular jumps; the fixed probe top (duck-jump reach)
+// bounds what the slide loop can see.
 // TF2 stand/duck hull diff: the unduck mount the grab performs after liftoff
+#define SJ_REGULAR_TOP 72.f
 #define SJ_DUCK_LIFT 20.f
-// TF2 stand/duck hull diff: same-tick duck+jump starts the feet this much
-// higher (Valve duck-jump doc). Used only as probe margin, never as arc truth.
-#define SJ_DUCK_LIFT 20.f
+#define SJ_PROBE_TOP 91.f
 
-// Exact live fields MoveSim.Initialize mutates. Snapshot before every sim,
-// restored after on ALL paths (its early-outs run no restore themselves).
-struct LiveBackup_t
+// (movement sims removed: traces only, the live player is never written.
+// StableTicks below stands down while warp/doubletap rewrites usercmds.)
+
+// (SimJumpArc removed: probe top and jump type use static game facts.)
+
+// Tick-shifting (warp / doubletap fire / recharge / speedhack) rewrites
+// usercmds after we run: any jump pressed mid-shift executes at the wrong
+// time or dies. The module stands down until ticks are stable again.
+static bool StableTicks()
 {
-	Vec3 vVel;
-	int iFlags, iState, iMoveType;
-	bool bDucked, bDucking, bInDuckJump;
-	float flDucktime, flDuckJumpTime;
-};
-
-static LiveBackup_t SaveLive(CTFPlayer* pLocal)
-{
-	return { pLocal->m_vecVelocity(), pLocal->m_fFlags(), pLocal->m_nPlayerState(), pLocal->m_MoveType(),
-		pLocal->m_bDucked(), pLocal->m_bDucking(), pLocal->m_bInDuckJump(),
-		pLocal->m_flDucktime(), pLocal->m_flDuckJumpTime() };
-}
-
-static void LoadLive(CTFPlayer* pLocal, const LiveBackup_t& t)
-{
-	pLocal->m_vecVelocity() = t.vVel;
-	pLocal->m_fFlags() = t.iFlags;
-	pLocal->m_nPlayerState() = t.iState;
-	pLocal->m_MoveType() = t.iMoveType;
-	pLocal->m_bDucked() = t.bDucked;
-	pLocal->m_bDucking() = t.bDucking;
-	pLocal->m_bInDuckJump() = t.bInDuckJump;
-	pLocal->m_flDucktime() = t.flDucktime;
-	pLocal->m_flDuckJumpTime() = t.flDuckJumpTime;
-}
-
-// RAII around the aimbot's movement sim: restores on every exit path,
-// and never sims failed storage (Initialize returns true with m_bFailed
-// set on the stuck path: simming that poisons decisions AND skips restore).
-struct SimGuard
-{
-	CTFPlayer* m_pPlayer;
-	LiveBackup_t m_tLive;
-	MoveStorage m_tStorage = {};
-	bool m_bOk = false;
-
-	SimGuard(CTFPlayer* pLocal) : m_pPlayer(pLocal), m_tLive(SaveLive(pLocal))
-	{
-		m_bOk = F::MoveSim.Initialize(pLocal, m_tStorage, false, false) && !m_tStorage.m_bFailed;
-	}
-	~SimGuard()
-	{
-		F::MoveSim.Restore(m_tStorage);
-		LoadLive(m_pPlayer, m_tLive);
-	}
-};
-
-int CSmartJump::SimJumpArc(CTFPlayer* pLocal, CUserCmd* pCmd, int iExtraButtons, float* pArc, int iMaxTicks)
-{
-	SimGuard g(pLocal);
-	if (!g.m_bOk)
-		return 0;
-	const int iMoveButtons = (pCmd->buttons | iExtraButtons) & ~(IN_ATTACK | IN_ATTACK2);
-	auto& mv = g.m_tStorage.m_MoveData;
-	mv.m_vecViewAngles = pCmd->viewangles;
-	mv.m_flForwardMove = pCmd->forwardmove;
-	mv.m_flSideMove = pCmd->sidemove;
-	mv.m_flUpMove = pCmd->upmove;
-	mv.m_nButtons = iMoveButtons | IN_JUMP;
-	mv.m_nOldButtons = iMoveButtons & ~IN_JUMP;
-	g.m_tStorage.m_bBunnyHop = false;
-	const float flStartZ = mv.m_vecAbsOrigin.z;
-	float flLastZ = flStartZ;
-	int iApex = 0;
-	for (int i = 1; i <= iMaxTicks; i++)
-	{
-		F::MoveSim.RunTick(g.m_tStorage, false);
-		const float flZ = mv.m_vecAbsOrigin.z;
-		pArc[i] = flZ - flStartZ;
-		if (i > 1 && flZ <= flLastZ)
-			break; // apex reached, arc only falls from here
-		flLastZ = flZ;
-		iApex = i;
-	}
-	return iApex;
+	return !F::Ticks.m_bRecharge && !F::Ticks.m_bWarp && !F::Ticks.m_bSpeedhack
+		&& !F::Ticks.m_bDoubletap && F::Ticks.m_iShiftedGoal == F::Ticks.m_iShiftedTicks;
 }
 
 float CSmartJump::StepNeed(CTFPlayer* pLocal, const Vec3& vFeet, const Vec3& vPush)
@@ -118,27 +52,42 @@ void CSmartJump::ArmGrab(CTFPlayer* pLocal, float flNeed)
 	m_bGrabArmed = true;
 }
 
+bool CSmartJump::RunSeq(CTFPlayer* pLocal, CUserCmd* pCmd)
+{
+	if (!m_iDuckSeq)
+		return false;
+	if (!StableTicks())
+	{
+		m_iDuckSeq = 0; // shift started mid-sequence: abort, re-detect when stable
+		return false;
+	}
+	m_iDuckSeq = 0;
+	if (!pLocal->m_hGroundEntity())
+		return true;
+	pCmd->buttons &= ~IN_DUCK;
+	pCmd->buttons |= IN_JUMP;
+	ArmGrab(pLocal, m_flSeqNeed);
+	BootLog("SJUMP fire duck");
+	return true;
+}
+
 void CSmartJump::RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
-	// Ctap tick two: crouched last tick, launch now (no re-verify, the lua
-	// fires unconditionally from CTAP state; worst case a hop).
-	if (m_iDuckSeq == 1)
-	{
-		m_iDuckSeq = 0;
-		if (!pLocal->m_hGroundEntity())
-			return;
-		pCmd->buttons &= ~IN_DUCK;
-		pCmd->buttons |= IN_JUMP;
-		ArmGrab(pLocal, m_flSeqNeed);
-		BootLog("SJUMP fire duck");
+	// Tick-shift in progress (warp / doubletap fire / recharge): usercmds
+	// get rewritten downstream, a press now would fire wrong or die.
+	if (!StableTicks())
 		return;
-	}
-
 	// grounded + intent only. no speed gate: pressing into an obstacle from
 	// standstill must fire too (minecraft parity).
 	if (!pLocal->m_hGroundEntity())
 		return;
 	if (!(pCmd->buttons & (IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT)))
+		return;
+	// Fire cooldown: grinding an obstacle must not machine-gun jump/duck
+	// into it every tick (crouch flicker freezes the body anim). One fire
+	// start per 10 ticks max; stairs still climb, walls get calm retries.
+	const int iTick = I::GlobalVars->tickcount;
+	if (m_iLastFireTick && iTick - m_iLastFireTick < 10)
 		return;
 
 	// wishdir from move intent rotated by yaw (NOT velocity: brushing a wall
@@ -158,12 +107,9 @@ void CSmartJump::RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd)
 	CTraceFilterWorldAndPropsOnly filter = {};
 	filter.pSkip = pLocal;
 
-	// Arc first, engine truth: regular-posture measurement sets the probe
-	// height (measured apex - 1 + duck lift so duck-clearable tops are seen)
-	// and later decides the jump type. Live gravity, real duck behavior.
-	float flArc[SJ_MAXTICKS + 1] = {};
-	const int iApex = SimJumpArc(pLocal, pCmd, 0, flArc, SJ_MAXTICKS);
-	const float flProbeTop = (iApex >= 2 ? flArc[iApex] + SJ_DUCK_LIFT : 91.f) - 1.f;
+	// Fixed probe top (traces only): duck-jump reach bounds what the loop
+	// below can see; anything taller is given up as unjumpable.
+	const float flProbeTop = SJ_PROBE_TOP;
 
 	// Slide-projection loop with OUR CURRENT AABB and nothing else: probe
 	// ahead, and when the probe is inside a wall at obstacle height, project
@@ -213,139 +159,52 @@ void CSmartJump::RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd)
 		vWish.Normalize2D();
 	}
 	if (flNeed < 0.f)
-		return; // 8 walls, no jumpable face: give up (doorway etc.)
-
-	// smallest sufficient jump, measured not assumed: regular arc clears
-	// anything within itself; taller needs the real ctap sequence, not a
-	// same-tick guess (the sim can't reach ducked liftoff from standing, so
-	// the duck decision credits the unduck mount the grab performs after
-	// liftoff, capped at probe range).
-	bool bRegular = false;
-	if (iApex >= 2)
 	{
-		for (int t = 1; t <= iApex; t++)
-		{
-			// pressed against the obstacle the arc rises in place and
-			// StepMove mounts the ledge once high enough, so any clearing
-			// tick counts
-			if (flArc[t] >= flNeed + SJ_CLEAR) { bRegular = true; break; }
-		}
+		m_flLastNeed = -1.f; // open air again: the next obstacle is a new edge
+		return; // 8 walls, no jumpable face: give up (doorway etc.)
 	}
-	if (bRegular || (pCmd->buttons & IN_DUCK))
+
+	// Edge-triggered firing (no machine-gun): a new obstacle, a new height
+	// on it, or a patient retry every 45 ticks fires once; the same wall
+	// held afterward stays quiet. Stairs still climb: every step is a new
+	// height edge.
+	const bool bNew = m_flLastNeed < 0.f || fabsf(flNeed - m_flLastNeed) > 4.f;
+	const bool bPatient = m_iLastFireTick && iTick - m_iLastFireTick > 45;
+	if (!bNew && !bPatient)
+		return;
+
+	// Smallest sufficient, static game facts: a regular jump rises 72u, so
+	// anything within it goes regular; taller needs the real ctap sequence
+	// (full crouch tick, then launch), capped at duck-jump reach.
+	if (flNeed + SJ_CLEAR <= SJ_REGULAR_TOP || (pCmd->buttons & IN_DUCK))
 	{
 		pCmd->buttons |= IN_JUMP;
 		ArmGrab(pLocal, flNeed);
+		m_flLastNeed = flNeed;
+		m_iLastFireTick = iTick;
 		BootLog("SJUMP fire auto");
 		return;
 	}
 	// Ctap tick one: full crouch, no jump. Launch follows next tick from
-	// ducked state (origin-lift path), then tuck + grab mount the rest.
-	if (iApex >= 2 && flNeed + SJ_CLEAR <= flArc[iApex] + SJ_DUCK_LIFT && flNeed <= 91.f)
+	// ducked state, then tuck + grab mount the rest. Never restart mid-flight.
+	if (!m_iDuckSeq && flNeed + SJ_CLEAR <= SJ_REGULAR_TOP + SJ_DUCK_LIFT && flNeed <= SJ_PROBE_TOP)
 	{
 		pCmd->buttons |= IN_DUCK;
 		pCmd->buttons &= ~IN_JUMP;
 		m_iDuckSeq = 1;
 		m_flSeqNeed = flNeed;
+		m_flLastNeed = flNeed;
+		m_iLastFireTick = iTick;
 		ArmGrab(pLocal, flNeed);
 	}
 }
 
-void CSmartJump::RunSmart(CTFPlayer* pLocal, CUserCmd* pCmd)
-{
-	// grounded + moving with intent only; airborne/standing still need no prediction
-	if (!pLocal->m_hGroundEntity())
-		return;
-	if (!(pCmd->buttons & (IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT)))
-		return;
-	Vec3 vVel = pLocal->m_vecVelocity();
-	const float flSpeed = vVel.Length2D();
-	if (flSpeed < 50.f)
-		return;
-	Vec3 vCoastDir = { vVel.x, vVel.y, 0.f };
-	vCoastDir.Normalize2D();
-
-	// Arc first, engine truth: sets the coast window (peak + 2) and later
-	// the latest-tick firing. Live gravity, no constants.
-	float flArc[SJ_MAXTICKS + 1] = {};
-	const int iApex = SimJumpArc(pLocal, pCmd, 0, flArc, SJ_MAXTICKS);
-	if (iApex < 2)
-		return; // jump goes nowhere (ceiling etc.)
-
-	// Coast with the aimbot's movement sim: identical inputs, no jump. Never
-	// past the peak: arrival while falling is dead air, the window ends at
-	// the apex. SimGuard restores on every path; failed storage is never simmed.
-	const int iWindow = iApex < SJ_MAXTICKS ? iApex : SJ_MAXTICKS;
-	int iWallTick = -1;
-	Vec3 vWallPos = {};
-	{
-		SimGuard g(pLocal);
-		if (!g.m_bOk)
-			return;
-		auto& mv = g.m_tStorage.m_MoveData;
-		mv.m_vecViewAngles = pCmd->viewangles;
-		mv.m_flForwardMove = pCmd->forwardmove;
-		mv.m_flSideMove = pCmd->sidemove;
-		mv.m_flUpMove = pCmd->upmove;
-		const int iMoveButtons = pCmd->buttons & ~(IN_JUMP | IN_ATTACK | IN_ATTACK2);
-		mv.m_nButtons = iMoveButtons;
-		mv.m_nOldButtons = iMoveButtons;
-		g.m_tStorage.m_bBunnyHop = false;
-		Vec3 vPrev = mv.m_vecAbsOrigin;
-		int iStuck = 0;
-		for (int i = 1; i <= iWindow; i++)
-		{
-			F::MoveSim.RunTick(g.m_tStorage, false);
-			if (!g.m_tStorage.m_bDirectMove)
-				break; // left the ground: no obstacle ahead on this path
-			Vec3 vCur = mv.m_vecAbsOrigin;
-			// progress along the coast direction, not raw displacement:
-			// sliding along a wall still moves, head-on contact doesn't
-			const float flAlong = (vCur.x - vPrev.x) * vCoastDir.x + (vCur.y - vPrev.y) * vCoastDir.y;
-			vPrev = vCur;
-			if (flAlong < 2.f)
-			{
-				if (++iStuck >= 2) { iWallTick = i; vWallPos = vCur; break; }
-			}
-			else
-				iStuck = 0;
-		}
-	}
-	if (iWallTick < 0)
-		return; // clear path through the whole window
-
-	// Wall plane at contact; ramps/steps (engine-handled) are not walls.
-	CTraceFilterWorldAndPropsOnly filter = {};
-	filter.pSkip = pLocal;
-	CGameTrace trace = {};
-	SDK::TraceHull(vWallPos - Vec3(vCoastDir.x, vCoastDir.y, 0) * 4.f + Vec3(0, 0, 1),
-		vWallPos + Vec3(vCoastDir.x, vCoastDir.y, 0) * 16.f + Vec3(0, 0, 1),
-		pLocal->m_vecMins(), pLocal->m_vecMaxs(), pLocal->SolidMask(), &filter, &trace);
-	if (!trace.DidHit() || trace.plane.normal.z >= 0.707f)
-		return;
-
-	const float flNeed = StepNeed(pLocal, vWallPos, Vec3(-trace.plane.normal.x, -trace.plane.normal.y, 0));
-	if (flNeed < 0.f)
-		return;
-
-	// Fire exactly when jumping NOW clears but jumping NEXT tick wouldn't:
-	// arrival ticks shrink by one per real tick, so next-tick airtime is
-	// iArrive - 1. Regular posture only: anything needing duck falls
-	// through to auto on arrival.
-	const int iArrive = iWallTick - 1; // contact happened ~1 tick before stuck registered
-	const bool bClearsNow = iArrive >= 1 && iArrive <= iApex && flArc[iArrive] >= flNeed + SJ_CLEAR;
-	const bool bClearsNext = iArrive - 1 >= 1 && iArrive - 1 <= iApex && flArc[iArrive - 1] >= flNeed + SJ_CLEAR;
-	if (iArrive < 1 || (bClearsNow && !bClearsNext))
-	{
-		pCmd->buttons |= IN_JUMP;
-		ArmGrab(pLocal, flNeed);
-		BootLog("SJUMP fire smart");
-	}
-}
+// (Smart jump removed: the edge-triggered auto jump covers arrivals too.)
 
 void CSmartJump::RunAir(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
 	// Ledge grab only; the tuck lives in CMisc::AirDuck (runs earlier).
-	if (Vars::Misc::Movement::SmartJump.Value == Vars::Misc::Movement::SmartJumpEnum::Off)
+	if (!Vars::Misc::Movement::AutoJump.Value)
 	{
 		m_bGrabArmed = false;
 		m_iDuckSeq = 0;

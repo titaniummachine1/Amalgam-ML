@@ -28,11 +28,9 @@ void CMisc::RunPre(CTFPlayer* pLocal, CUserCmd* pCmd)
 	AutoFaNJump(pLocal, pCmd);
 	AutoRevJump(pLocal, pCmd);
 	AutoStrafe(pLocal, pCmd);
-	switch (Vars::Misc::Movement::SmartJump.Value)
-	{
-	case Vars::Misc::Movement::SmartJumpEnum::AutoJump: F::SmartJump.RunAuto(pLocal, pCmd); break;
-	case Vars::Misc::Movement::SmartJumpEnum::SmartJump: F::SmartJump.RunSmart(pLocal, pCmd); break;
-	}
+	// Ctap tick two first: a decided launch isn't re-probed.
+	if (!F::SmartJump.RunSeq(pLocal, pCmd) && Vars::Misc::Movement::AutoJump.Value)
+		F::SmartJump.RunAuto(pLocal, pCmd);
 	F::SmartJump.RunAir(pLocal, pCmd);
 	AutoPeek(pLocal, pCmd);
 	MovementLock(pLocal, pCmd);
