@@ -1349,6 +1349,7 @@ void CMenu::MenuMisc(int iTab)
 					FToggle(Vars::Misc::Movement::MovementLock, FToggleEnum::Right);
 					FToggle(Vars::Misc::Movement::MoveLog, FToggleEnum::Left);
 					FDropdown(Vars::Misc::Movement::SmartJump);
+					FToggle(Vars::Misc::Movement::AirDuck, FToggleEnum::Right);
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{

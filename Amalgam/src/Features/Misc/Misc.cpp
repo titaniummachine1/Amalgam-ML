@@ -32,6 +32,7 @@ void CMisc::RunPre(CTFPlayer* pLocal, CUserCmd* pCmd)
 	case Vars::Misc::Movement::SmartJumpEnum::AutoJump: F::SmartJump.RunAuto(pLocal, pCmd); break;
 	case Vars::Misc::Movement::SmartJumpEnum::SmartJump: F::SmartJump.RunSmart(pLocal, pCmd); break;
 	}
+	F::SmartJump.RunAir(pLocal, pCmd);
 	AutoPeek(pLocal, pCmd);
 	MovementLock(pLocal, pCmd);
 	BreakJump(pLocal, pCmd);

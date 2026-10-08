@@ -13,6 +13,12 @@
 class CSmartJump
 {
 private:
+	// Grab state: obstacle top recorded when a jump fires; while ascending
+	// past it, a confirmed surface below releases duck (ledge grab: the
+	// unduck stands you onto the surface instead of falling back down).
+	bool m_bGrabArmed = false;
+	float m_flGrabTop = 0.f;
+
 	// Simulates a jump pressed on the first tick with the given buttons.
 	// Returns the apex tick (0 = no useful arc); fills pArc[1..apex]
 	// with heights above the start origin. Duck posture comes from the
@@ -22,10 +28,16 @@ private:
 	// down with our AABB. Returns height above feet, or -1 when steppable
 	// (<= sv_stepsize), taller than 72u, or open air. Never jumps on -1.
 	float StepNeed(CTFPlayer* pLocal, const Vec3& vFeet, const Vec3& vPush);
+	// Records the obstacle top for the ledge grab on jump press.
+	void ArmGrab(CTFPlayer* pLocal, float flNeed);
 
 public:
 	void RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void RunSmart(CTFPlayer* pLocal, CUserCmd* pCmd);
+	// Airborne companion: tucks (duck) while ascending so the hull clears
+	// lips, releases on descent or on a confirmed grab surface. Never
+	// touches duck while the rocket-jump sequencer runs.
+	void RunAir(CTFPlayer* pLocal, CUserCmd* pCmd);
 };
 
 ADD_FEATURE(CSmartJump, SmartJump);

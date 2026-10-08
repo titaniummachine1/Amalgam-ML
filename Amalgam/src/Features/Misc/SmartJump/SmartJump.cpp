@@ -1,6 +1,7 @@
 #include "SmartJump.h"
 
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
+#include "../../Aimbot/AutoRocketJump/AutoRocketJump.h"
 
 // sv_stepsize default: the engine auto-steps anything at/below this, no jump needed
 #define SJ_STEP 18.f
@@ -53,6 +54,12 @@ float CSmartJump::StepNeed(CTFPlayer* pLocal, const Vec3& vFeet, const Vec3& vPu
 	return flNeed;
 }
 
+void CSmartJump::ArmGrab(CTFPlayer* pLocal, float flNeed)
+{
+	m_flGrabTop = pLocal->m_vecOrigin().z + flNeed;
+	m_bGrabArmed = true;
+}
+
 void CSmartJump::RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
 	// grounded + moving with intent only; airborne/standing still need no help
@@ -61,38 +68,41 @@ void CSmartJump::RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd)
 	if (!(pCmd->buttons & (IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT)))
 		return;
 	Vec3 vVel = pLocal->m_vecVelocity();
-	const float flSpeed = vVel.Length2D();
-	if (flSpeed < 50.f)
+	if (vVel.Length2D() < 50.f)
 		return;
 	Vec3 vDir = { vVel.x, vVel.y, 0.f };
 	vDir.Normalize2D();
 
-	// already colliding? short hull sweep along motion; sliding along a wall
-	// points velocity away from it, so this only fires moving INTO the wall
+	// Single probe: AABB 1u ahead along motion, 72u up, hull sweep down.
+	// startsolid up top = sheer wall (don't act weird walking into walls);
+	// open air = nothing there; <= step height = walkable. One trace.
 	const Vec3 vOrigin = pLocal->m_vecOrigin();
+	const Vec3 vTop = vOrigin + Vec3(vDir.x, vDir.y, 0) + Vec3(0, 0, 72);
 	CGameTrace trace = {};
 	CTraceFilterWorldAndPropsOnly filter = {};
 	filter.pSkip = pLocal;
-	SDK::TraceHull(vOrigin + Vec3(0, 0, 1), vOrigin + vDir * (flSpeed * TICK_INTERVAL + 6.f) + Vec3(0, 0, 1),
-		pLocal->m_vecMins(), pLocal->m_vecMaxs(), pLocal->SolidMask(), &filter, &trace);
-	if (!trace.DidHit() || trace.plane.normal.z >= 0.707f)
-		return; // clear path / ramp-step: nothing to do
-
-	// confirm it's a jumpable obstacle, not a flat wall, and get its height
-	const float flNeed = StepNeed(pLocal, Vec3(trace.endpos.x, trace.endpos.y, vOrigin.z), vDir);
-	if (flNeed < 0.f)
+	SDK::TraceHull(vTop, vTop - Vec3(0, 0, 144), pLocal->m_vecMins(), pLocal->m_vecMaxs(), pLocal->SolidMask(), &filter, &trace);
+	if (!trace.DidHit() || trace.startsolid || trace.allsolid)
+		return;
+	const float flNeed = trace.endpos.z - vOrigin.z;
+	if (flNeed <= SJ_STEP)
 		return;
 
 	const int iMoveButtons = pCmd->buttons & ~(IN_JUMP | IN_ATTACK | IN_ATTACK2);
 
-	// smallest sufficient jump, measured: regular first...
+	// smallest sufficient jump, measured: regular first (pressed against the
+	// obstacle the arc rises in place and StepMove mounts the ledge once
+	// high enough, so any clearing tick counts)...
 	float flArc[SJ_MAXTICKS + 1] = {};
 	const int iApex = JumpArc(pLocal, pCmd, iMoveButtons, flArc, SJ_MAXTICKS);
 	for (int t = 1; t <= iApex; t++)
 	{
-		// pressed against the wall the arc rises in place and StepMove
-		// mounts the ledge once high enough, so any clearing tick counts
-		if (flArc[t] >= flNeed + SJ_CLEAR) { pCmd->buttons |= IN_JUMP; return; }
+		if (flArc[t] >= flNeed + SJ_CLEAR)
+		{
+			pCmd->buttons |= IN_JUMP;
+			ArmGrab(pLocal, flNeed);
+			return;
+		}
 	}
 
 	// ...then duck jump, only when it actually clears and isn't needed otherwise
@@ -102,7 +112,12 @@ void CSmartJump::RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd)
 		const int iDuckApex = JumpArc(pLocal, pCmd, iMoveButtons | IN_DUCK, flDuckArc, SJ_MAXTICKS);
 		for (int t = 1; t <= iDuckApex; t++)
 		{
-			if (flDuckArc[t] >= flNeed + SJ_CLEAR) { pCmd->buttons |= IN_JUMP | IN_DUCK; return; }
+			if (flDuckArc[t] >= flNeed + SJ_CLEAR)
+			{
+				pCmd->buttons |= IN_JUMP | IN_DUCK;
+				ArmGrab(pLocal, flNeed);
+				return;
+			}
 		}
 	}
 }
@@ -198,5 +213,51 @@ void CSmartJump::RunSmart(CTFPlayer* pLocal, CUserCmd* pCmd)
 	const int iArrive = iWallTick - 1; // contact happened ~1 tick before stuck registered
 	const int iAt = iArrive < iApex ? iArrive : iApex;
 	if (iArrive < 1 || (iArrive <= iClear + 1 && flArc[iAt] >= flNeed + SJ_CLEAR))
+	{
 		pCmd->buttons |= IN_JUMP;
+		ArmGrab(pLocal, flNeed);
+	}
+}
+
+void CSmartJump::RunAir(CTFPlayer* pLocal, CUserCmd* pCmd)
+{
+	if (Vars::Misc::Movement::SmartJump.Value == Vars::Misc::Movement::SmartJumpEnum::Off
+		|| !Vars::Misc::Movement::AirDuck.Value)
+	{
+		m_bGrabArmed = false;
+		return;
+	}
+	if (pLocal->m_hGroundEntity() || F::AutoRocketJump.IsRunning())
+	{
+		// landed: grab window over. sequencer owns duck mid-jump.
+		m_bGrabArmed = false;
+		return;
+	}
+
+	const float flVZ = pLocal->m_vecVelocity().z;
+	if (flVZ > 0.f)
+	{
+		// ascending: tuck so the hull clears lips. falling is left alone
+		// (jumpbug unduck timing, fast-fall edgebugs stay yours).
+		pCmd->buttons |= IN_DUCK;
+
+		// ledge grab: past the obstacle top with a confirmed surface below?
+		// releasing duck stands you onto it instead of falling back down.
+		if (m_bGrabArmed && pLocal->m_vecOrigin().z > m_flGrabTop)
+		{
+			const Vec3 vPos = pLocal->m_vecOrigin();
+			CGameTrace trace = {};
+			CTraceFilterWorldAndPropsOnly filter = {};
+			filter.pSkip = pLocal;
+			SDK::TraceHull(Vec3(vPos.x, vPos.y, m_flGrabTop + 1), Vec3(vPos.x, vPos.y, m_flGrabTop - 10),
+				pLocal->m_vecMins(), pLocal->m_vecMaxs(), pLocal->SolidMask(), &filter, &trace);
+			if (trace.DidHit() && !trace.startsolid)
+			{
+				pCmd->buttons &= ~IN_DUCK;
+				m_bGrabArmed = false;
+			}
+		}
+	}
+	else if (pLocal->m_vecOrigin().z < m_flGrabTop - 100.f)
+		m_bGrabArmed = false; // fell far below: stale window, disarm
 }

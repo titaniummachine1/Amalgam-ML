@@ -731,6 +731,7 @@ NAMESPACE_BEGIN(Vars)
 			CVarEnum(SmartJump, "Smart jump", 0, NONE, nullptr,
 				VA_LIST("Off", "Auto jump", "Smart jump"),
 				Off, AutoJump, SmartJump);
+			CVar(AirDuck, "Air duck", true);
 
 			CVar(AutoRocketJumpChokeGrounded, "Choke grounded", 1, NOSAVE | DEBUGVAR, 0, 3);
 			CVar(AutoRocketJumpChokeAir, "Choke air", 1, NOSAVE | DEBUGVAR, 0, 3);
