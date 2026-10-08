@@ -1,6 +1,7 @@
 #include "Core.h"
 
 #include "../SDK/SDK.h"
+#include "../Utils/BootLog/BootLog.h"
 #include "../BytePatches/BytePatches.h"
 #include "../Features/Configs/Configs.h"
 #include "../Features/ImGui/Menu/Menu.h"
@@ -117,6 +118,7 @@ void CCore::Load()
 	F::Configs.LoadConfig(F::Configs.m_sCurrentConfig, false);
 
 	SDK::Output("Amalgam", "Loaded", INFO_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG, ICON_MD_INFO);
+	BootLog("LOAD ok");
 }
 
 void CCore::Loop()
@@ -133,6 +135,7 @@ void CCore::Loop()
 
 void CCore::Unload()
 {
+	BootLog("UNLOAD start");
 	if (m_bFailed)
 	{
 		LogFailText();
@@ -175,4 +178,5 @@ void CCore::Unload()
 	}
 
 	SDK::Output("Amalgam", "Unloaded", INFO_COLOR, OUTPUT_CONSOLE | OUTPUT_DEBUG);
+	BootLog("UNLOAD done");
 }
