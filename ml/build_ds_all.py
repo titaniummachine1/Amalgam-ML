@@ -17,6 +17,25 @@ os.makedirs(OUT, exist_ok=True)
 DB = os.path.join(OUT, os.environ.get('ML_DB', 'dataset_all.db'))
 SUF = os.environ.get('OUT_SUFFIX', 'B')
 EYE_FRAME = os.environ.get('EYE_FRAME', '0') == '1'
+# WEAPON_DIMS=1 (generation E): append 4 weapon dims AFTER the 14 base dims
+# (warm-start contract: first 14 dims EXACTLY match B, new cols zero-init):
+#   wslot one-hot (3: primary/secondary/melee, all-zero = unknown) +
+#   wcls scalar (1: weapon-class id / WCLS_SCALE, 0 = unknown).
+# Identity is the server class (defindex is NOT networked in STV demos -
+# verified 2026-10-08: no m_Item view in 363 tables). Slot comes from the
+# class->slot table below (no m_hMyWeapons in STV either). MG vs stock shovel
+# share CTFShovel: accepted blur, documented. C++ BuildWarmup mirrors this
+# EXACTLY (same table, live entity class name; defid ignored for parity).
+WEAPON_DIMS = os.environ.get('WEAPON_DIMS', '0') == '1'
+# (slot, class_id). Soldier table v1: classes OBSERVED in MGE dumps.
+# Unknown classes -> (None, 0): all-zero slot + zero scalar (safe default,
+# identical to pre-weapon behavior). Extend per class when data shows need.
+WCLASS = {
+    'CTFRocketLauncher': (0, 1),
+    'CTFShotgun_Soldier': (1, 2),
+    'CTFShovel': (2, 3),
+}
+WCLS_SCALE = 16.0
 
 # TF2 base run speeds hu/s by class id
 MAXV_CLS = {1: 400.0, 2: 300.0, 3: 240.0, 4: 280.0, 5: 320.0,
@@ -40,8 +59,12 @@ demo_id = didreg.register([os.path.basename(f) for f in files])  # registry, nev
 
 # per (demo,ent) series -> AFK mask, segments, windows
 def series(did, ent):
-    q = con.execute('SELECT tick,ox,oy,oz,grounded,eyey,cls FROM ticks WHERE demo=? AND ent=? ORDER BY tick',
-                    (did, ent)).fetchall()
+    if WEAPON_DIMS:
+        q = con.execute('SELECT tick,ox,oy,oz,grounded,eyey,cls,wcls FROM ticks WHERE demo=? AND ent=? ORDER BY tick',
+                        (did, ent)).fetchall()
+    else:
+        q = con.execute('SELECT tick,ox,oy,oz,grounded,eyey,cls FROM ticks WHERE demo=? AND ent=? ORDER BY tick',
+                        (did, ent)).fetchall()
     return q
 
 Xtr, Ytr, Wtr, Htr, Ktr, Xev, Yev, Wev, Hev, Kev = [], [], [], [], [], [], [], [], [], []
@@ -77,6 +100,7 @@ for name, did in sorted(demo_id.items(), key=lambda kv: kv[1]):
         gr = np.array([r[4] for r in s], dtype=np.float64)
         ey = np.array([r[5] for r in s])
         cl = np.array([r[6] for r in s], dtype=np.int64)
+        wc = np.array([r[7] if len(r) > 7 and r[7] else '' for r in s]) if WEAPON_DIMS else None
         for c in cl[(cl >= 1) & (cl <= 9)]:
             audit_raw[int(c)] += 1
         # consecutive + teleport + CLASS-CHANGE split (history invalid across classes)
@@ -164,6 +188,17 @@ for name, did in sorted(demo_id.items(), key=lambda kv: kv[1]):
                         oh[cls - 1] = 1.0
                     Xb = np.stack([ve[:, 0], ve[:, 1], sp, gr[w], dy], axis=1).astype(np.float32)
                     X = np.concatenate([Xb, np.repeat(oh[None, :], W, axis=0)], axis=1)
+                    if WEAPON_DIMS:
+                        # per-tick window weapon feats (history, like everything
+                        # else): slot one-hot + class scalar from wcls[w].
+                        wsl = np.zeros((W, 3), dtype=np.float32)
+                        wci = np.zeros((W, 1), dtype=np.float32)
+                        for ti, cname in enumerate(wc[w]):
+                            se = WCLASS.get(cname)
+                            if se is not None and se[0] is not None:
+                                wsl[ti, se[0]] = 1.0
+                                wci[ti, 0] = se[1] / WCLS_SCALE
+                        X = np.concatenate([X, wsl, wci], axis=1)
                     # PURE INPUT accel (behavior, not physics): cancel TF2 ground friction
                     # (drop = max(speed,100)*sv_friction(4)*dt). Air: dV/dt is already pure.
                     v0r = v[lt]

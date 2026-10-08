@@ -23,6 +23,13 @@ con.execute('PRAGMA synchronous=NORMAL')
 con.execute('''CREATE TABLE IF NOT EXISTS ticks(demo SMALLINT, ent SMALLINT, tick INT,
   ox REAL, oy REAL, oz REAL, grounded TINYINT, eyey REAL, cls TINYINT, eyep REAL,
   PRIMARY KEY(demo, ent, tick))''')
+# wcls: active-weapon server class per tick (extractor wcls column, 2026-10-08).
+# Migrates old DBs in place; absent in old CSVs -> '' (unknown bucket).
+try:
+    con.execute("ALTER TABLE ticks ADD COLUMN wcls TEXT DEFAULT ''")
+    con.commit()
+except Exception:
+    pass
 
 reg = didreg.load()
 have = {r[0] for r in con.execute('SELECT DISTINCT demo FROM ticks').fetchall()}
@@ -47,10 +54,10 @@ for f in files:
                               float(row['ox']), float(row['oy']), float(row['oz']),
                               1 if (int(row['flags']) & 1) else 0,
                               float(row['eyey']), int(row['class']),
-                              float(row['eyep'])))
+                              float(row['eyep']), (row.get('wcls') or '')[:64]))
             except ValueError:
                 continue
-    con.executemany('INSERT OR IGNORE INTO ticks VALUES (?,?,?,?,?,?,?,?,?,?)', batch)
+    con.executemany('INSERT OR IGNORE INTO ticks VALUES (?,?,?,?,?,?,?,?,?,?,?)', batch)
     con.commit()
     print('loaded', name, len(batch), flush=True)
 con.execute('CREATE INDEX IF NOT EXISTS ix_ticks ON ticks(demo, ent, tick)')
