@@ -36,7 +36,9 @@ class Net(nn.Module):
 
 
 def apply_friction(v, gr):
-    sp = (v ** 2).sum(-1, keepdim=True).sqrt()
+    # slen-style eps: bare sqrt(0) gives inf gradients (torch 2.12.1), which
+    # clip_grad_norm turns into NaN weights. Forward change <1e-6.
+    sp = torch.sqrt((v ** 2).sum(-1, keepdim=True) + 1e-12)
     drop = torch.clamp(sp, min=100.0) * 4.0 * DT
     newsp = torch.clamp(sp - drop, min=0.0)
     scale = torch.where(sp > 0, newsp / sp.clamp_min(1e-6), torch.ones_like(sp))
@@ -57,7 +59,7 @@ def unroll(net, xb):
         a = net.head(hh[-1]) * mv.squeeze(1)
         v = apply_friction(v, gr) + a * DT
         p = p + v * DT
-        sp = (v ** 2).sum(-1, keepdim=True).sqrt() / mv.squeeze(1)
+        sp = torch.sqrt((v ** 2).sum(-1, keepdim=True) + 1e-12) / mv.squeeze(1)
         dyn = torch.cat([(v / mv.squeeze(1)).unsqueeze(1), sp.unsqueeze(1),
                          gr.unsqueeze(1), torch.zeros_like(sp).unsqueeze(1)], dim=-1)
         _, hh = net.gru(torch.cat([dyn, static], dim=-1), hh)
@@ -69,10 +71,11 @@ def dense_loss(net, xb, Hb, Vb):
     traj = unroll(net, xb)
     tgt = torch.from_numpy(np.array(Hb))
     m = torch.from_numpy(np.array(Vb)).unsqueeze(-1).float()
-    # GUARD (2026-10-07): see train_denseD.py - NaN targets on invalid ticks
-    # poison the masked sum via NaN*0=NaN. Sanitize before masking; valid
-    # ticks unaffected.
-    err = torch.abs(traj - tgt).amax(dim=-1, keepdim=True).nan_to_num(0.0)
+    # GUARD (2026-10-07, root-caused via anomaly detection): sanitize BEFORE
+    # the amax reduction - see train_denseD.py. Same latent bug here (survived
+    # by data luck); would NaN on any row with an invalid tick.
+    diff = (traj - tgt).nan_to_num(0.0)
+    err = diff.abs().amax(dim=-1, keepdim=True)
     inside = (err <= HB).float()
     lin = torch.log((err + 1.0) / (HB + 1.0)) * inside
     lout = 4.0 * ((err - HB) / HB).clamp_min(0.0) ** 2 * (1.0 - inside)

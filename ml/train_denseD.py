@@ -38,7 +38,10 @@ class Net(nn.Module):
 
 
 def apply_friction(v, gr):
-    sp = (v ** 2).sum(-1, keepdim=True).sqrt()
+    # slen-style eps (STATUS doctrine): bare sqrt(0) gives inf gradients
+    # (measured torch 2.12.1), which clip_grad_norm turns into NaN weights
+    # after step 1 (voided run #1). Forward values change by <1e-6.
+    sp = torch.sqrt((v ** 2).sum(-1, keepdim=True) + 1e-12)
     drop = torch.clamp(sp, min=100.0) * 4.0 * DT
     newsp = torch.clamp(sp - drop, min=0.0)
     scale = torch.where(sp > 0, newsp / sp.clamp_min(1e-6), torch.ones_like(sp))
@@ -59,7 +62,7 @@ def unroll(net, xb):
         a = net.head(hh[-1]) * mv.squeeze(1)
         v = apply_friction(v, gr) + a * DT
         p = p + v * DT
-        sp = (v ** 2).sum(-1, keepdim=True).sqrt() / mv.squeeze(1)
+        sp = torch.sqrt((v ** 2).sum(-1, keepdim=True) + 1e-12) / mv.squeeze(1)
         dyn = torch.cat([(v / mv.squeeze(1)).unsqueeze(1), sp.unsqueeze(1),
                          gr.unsqueeze(1), torch.zeros_like(sp).unsqueeze(1)], dim=-1)
         _, hh = net.gru(torch.cat([dyn, static], dim=-1), hh)
