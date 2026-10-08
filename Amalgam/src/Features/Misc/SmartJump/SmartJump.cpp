@@ -9,6 +9,8 @@
 // extra clearance so the arc doesn't clip the lip on the way over
 #define SJ_CLEAR 4.f
 #define SJ_MAXTICKS 66
+// TF2 stand/duck hull diff: the unduck mount the grab performs after liftoff
+#define SJ_DUCK_LIFT 20.f
 // TF2 stand/duck hull diff: same-tick duck+jump starts the feet this much
 // higher (Valve duck-jump doc). Used only as probe margin, never as arc truth.
 #define SJ_DUCK_LIFT 20.f
@@ -118,6 +120,20 @@ void CSmartJump::ArmGrab(CTFPlayer* pLocal, float flNeed)
 
 void CSmartJump::RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
+	// Ctap tick two: crouched last tick, launch now (no re-verify, the lua
+	// fires unconditionally from CTAP state; worst case a hop).
+	if (m_iDuckSeq == 1)
+	{
+		m_iDuckSeq = 0;
+		if (!pLocal->m_hGroundEntity())
+			return;
+		pCmd->buttons &= ~IN_DUCK;
+		pCmd->buttons |= IN_JUMP;
+		ArmGrab(pLocal, m_flSeqNeed);
+		BootLog("SJUMP fire duck");
+		return;
+	}
+
 	// grounded + intent only. no speed gate: pressing into an obstacle from
 	// standstill must fire too (minecraft parity).
 	if (!pLocal->m_hGroundEntity())
@@ -200,9 +216,10 @@ void CSmartJump::RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd)
 		return; // 8 walls, no jumpable face: give up (doorway etc.)
 
 	// smallest sufficient jump, measured not assumed: regular arc clears
-	// anything within itself; the ascending tuck (AirDuck) + ledge grab
-	// (RunAir) mounts the rest, so duck is only pressed when the measured
-	// regular arc can't reach even with clearance margin.
+	// anything within itself; taller needs the real ctap sequence, not a
+	// same-tick guess (the sim can't reach ducked liftoff from standing, so
+	// the duck decision credits the unduck mount the grab performs after
+	// liftoff, capped at probe range).
 	bool bRegular = false;
 	if (iApex >= 2)
 	{
@@ -215,24 +232,22 @@ void CSmartJump::RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd)
 		}
 	}
 	if (bRegular || (pCmd->buttons & IN_DUCK))
-		pCmd->buttons |= IN_JUMP;
-	else
 	{
-		// measure the duck posture the same way; the engine's real duck-jump
-		// (origin lift included) decides, not a constant
-		float flDuckArc[SJ_MAXTICKS + 1] = {};
-		const int iDuckApex = SimJumpArc(pLocal, pCmd, IN_DUCK, flDuckArc, SJ_MAXTICKS);
-		bool bDuck = false;
-		for (int t = 1; t <= iDuckApex; t++)
-		{
-			if (flDuckArc[t] >= flNeed + SJ_CLEAR) { bDuck = true; break; }
-		}
-		if (!bDuck)
-			return; // neither posture clears it
-		pCmd->buttons |= IN_JUMP | IN_DUCK;
+		pCmd->buttons |= IN_JUMP;
+		ArmGrab(pLocal, flNeed);
+		BootLog("SJUMP fire auto");
+		return;
 	}
-	ArmGrab(pLocal, flNeed);
-	BootLog("SJUMP fire auto");
+	// Ctap tick one: full crouch, no jump. Launch follows next tick from
+	// ducked state (origin-lift path), then tuck + grab mount the rest.
+	if (iApex >= 2 && flNeed + SJ_CLEAR <= flArc[iApex] + SJ_DUCK_LIFT && flNeed <= 91.f)
+	{
+		pCmd->buttons |= IN_DUCK;
+		pCmd->buttons &= ~IN_JUMP;
+		m_iDuckSeq = 1;
+		m_flSeqNeed = flNeed;
+		ArmGrab(pLocal, flNeed);
+	}
 }
 
 void CSmartJump::RunSmart(CTFPlayer* pLocal, CUserCmd* pCmd)
@@ -333,6 +348,7 @@ void CSmartJump::RunAir(CTFPlayer* pLocal, CUserCmd* pCmd)
 	if (Vars::Misc::Movement::SmartJump.Value == Vars::Misc::Movement::SmartJumpEnum::Off)
 	{
 		m_bGrabArmed = false;
+		m_iDuckSeq = 0;
 		return;
 	}
 	if (pLocal->m_hGroundEntity() || F::AutoRocketJump.IsRunning())
@@ -341,6 +357,7 @@ void CSmartJump::RunAir(CTFPlayer* pLocal, CUserCmd* pCmd)
 		m_bGrabArmed = false;
 		return;
 	}
+	m_iDuckSeq = 0; // airborne: sequence either fired or walked off, clear
 
 	// ascending past the recorded obstacle top with a confirmed surface
 	// below? release duck: the unduck stands you onto it instead of falling

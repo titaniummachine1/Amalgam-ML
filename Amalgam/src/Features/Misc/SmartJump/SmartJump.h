@@ -23,6 +23,12 @@ private:
 	// unduck stands you onto the surface instead of falling back down).
 	bool m_bGrabArmed = false;
 	float m_flGrabTop = 0.f;
+	// Ctap sequence: 0 idle, 1 = crouched, jump fires next tick. Same-tick
+	// DUCK+JUMP from standing never reaches the ducked-liftoff path (hull
+	// still transitioning), so the duck jump is scripted like the lua:
+	// full crouch tick first, then unduck+jump from ducked state.
+	int m_iDuckSeq = 0;
+	float m_flSeqNeed = 0.f;
 
 	// Engine-measured jump arc with extra buttons held (0 or IN_DUCK).
 	// Returns the apex tick (0 = no useful arc); fills pArc[1..apex] with
