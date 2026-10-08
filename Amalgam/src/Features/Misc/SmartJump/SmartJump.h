@@ -3,13 +3,18 @@
 
 // CSmartJump: minecraft-style jump assistance, one mode at a time
 // (Vars::Misc::Movement::SmartJump: Off / Auto jump / Smart jump).
-// - Auto jump (reactive): fires only when already moving into a wall you
-//   can't step over. Probes obstacle height (1u in, 72u up, hull down);
-//   sheer walls (down-trace startsolid / fraction 0 up top) are ignored so
-//   walking into a flat wall does nothing. Picks the smallest sufficient
-//   jump by measurement: regular, else duck jump, else nothing.
-// - Smart jump (predictive): coasts the current wishdir up to the jump peak
-//   and jumps on the latest tick whose arc still clears the obstacle.
+// - Auto jump (reactive): intent wishdir, slide-projection probe loop with
+//   our live AABB (1u out, top derived from the measured arc, sweep down).
+//   Sheer walls are slid along (up to 8), steps ignored, then the smallest
+//   sufficient jump fires: regular, else duck, else nothing. All heights are
+//   engine-measured per tick (live gravity, real duck behavior), no constants.
+// - Smart jump (predictive): coasts the current motion with the aimbot's
+//   movement sim up to the measured jump peak, probes the wall found there,
+//   and jumps on the latest tick whose measured arc still clears it.
+// - Prediction never touches the live player beyond the shared sim's
+//   save/sim/restore (same facility the aimbot uses on enemies): SimGuard
+//   restores on every path, including init-fail, and re-saves the exact
+//   live fields Initialize mutates. Probes are read-only SDK traces.
 class CSmartJump
 {
 private:
@@ -19,11 +24,11 @@ private:
 	bool m_bGrabArmed = false;
 	float m_flGrabTop = 0.f;
 
-	// Simulates a jump pressed on the first tick with the given buttons.
-	// Returns the apex tick (0 = no useful arc); fills pArc[1..apex]
-	// with heights above the start origin. Duck posture comes from the
-	// buttons, so ctap arcs are measured, not assumed.
-	int JumpArc(CTFPlayer* pLocal, CUserCmd* pCmd, int iButtons, float* pArc, int iMaxTicks);
+	// Engine-measured jump arc with extra buttons held (0 or IN_DUCK).
+	// Returns the apex tick (0 = no useful arc); fills pArc[1..apex] with
+	// heights above the start origin. Uses the aimbot's movement sim with
+	// full restore; live gravity and real duck behavior, no constants.
+	int SimJumpArc(CTFPlayer* pLocal, CUserCmd* pCmd, int iExtraButtons, float* pArc, int iMaxTicks);
 	// Obstacle probe: 1u into the wall along vPush, 72u up, hull-trace
 	// down with our AABB. Returns height above feet, or -1 when steppable
 	// (<= sv_stepsize), taller than 72u, or open air. Never jumps on -1.
