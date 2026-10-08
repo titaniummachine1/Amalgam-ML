@@ -55,6 +55,17 @@ void CAimbot::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 	if (abs(G::AimPoint.m_iTickCount - I::GlobalVars->tickcount) > G::AimPoint.m_iDuration)
 		G::AimPoint = {};
 
+	// Priority order: lowest first. The aimbot runs before everything so
+	// any higher-priority feature gets the final say on angles + trigger.
+	// The rocket-jump sequencer runs last and owns both while active.
+	// (IsRunning() here is last tick's state; on the sequence-start tick
+	// the aimbot still runs first and RJ overwrites it. Correct.)
+	if (ShouldRun(pLocal, pWeapon, pCmd) && !F::AutoRocketJump.IsRunning())
+	{
+		RunAimbot(pLocal, pWeapon, pCmd);
+		RunAimbot(pLocal, pWeapon, pCmd, true);
+	}
+
 	F::AutoRocketJump.Run(pLocal, pWeapon, pCmd);
 	if (!ShouldRun(pLocal, pWeapon, pCmd))
 		return;
@@ -62,9 +73,6 @@ void CAimbot::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 	F::AutoDetonate.Run(pLocal, pCmd);
 	F::AutoAirblast.Run(pLocal, pWeapon, pCmd);
 	F::AutoHeal.Run(pLocal, pWeapon, pCmd);
-
-	RunAimbot(pLocal, pWeapon, pCmd);
-	RunAimbot(pLocal, pWeapon, pCmd, true);
 }
 
 void CAimbot::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
