@@ -17,9 +17,6 @@ public:
 	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bool* pSendPacket);
 
 	int m_iGoal = 0;
-	// charge reach: the fire tick must reach the server unchoked, or the
-	// smack window (computed from latency+choke) mistimes. consume-once.
-	bool m_bForceSend = false;
 };
 
 ADD_FEATURE(CFakeLag, FakeLag);

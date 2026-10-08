@@ -2,7 +2,6 @@
 
 #include "../Aimbot.h"
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
-#include "../../PacketManip/FakeLag/FakeLag.h"
 #include "../../EnginePrediction/EnginePrediction.h"
 #include "../../Ticks/Ticks.h"
 #include "../../Visuals/Visuals.h"
@@ -632,7 +631,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 			break;
 		case ChargeState::Charge:
 			pCmd->buttons |= IN_ATTACK2;
-			F::FakeLag.m_bForceSend = true;
+			G::SendPacket = true;
 			m_eChargeState = ChargeState::Idle;
 			m_iChargeTarget = -1;
 			break;

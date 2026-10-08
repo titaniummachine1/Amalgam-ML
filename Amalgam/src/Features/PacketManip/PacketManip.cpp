@@ -13,12 +13,8 @@ void CPacketManip::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 {
 	F::FakeAngle.bDrawChams = Vars::Fakelag::Fakelag.Value || F::AntiAim.AntiAimOn();
 
-	const bool bForceSend = F::FakeLag.m_bForceSend;
-	F::FakeLag.m_bForceSend = false;
 	*pSendPacket = true;
 	F::FakeLag.Run(pLocal, pWeapon, pCmd, pSendPacket);
 	if (AntiAimCheck(pLocal, pWeapon, pCmd))
 		*pSendPacket = false;
-	if (bForceSend)
-		*pSendPacket = true;
 }

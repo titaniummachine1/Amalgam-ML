@@ -108,6 +108,12 @@ namespace G
 
 	inline bool AntiAim = false;
 	inline bool Choking = false;
+	// Force-send request (old-fork G::SendPacket writers): any feature sets
+	// true to unchoke this tick (charge reach fire, warp/DT sends). Applied
+	// to the send pointer and cleared at the end of CreateMove, so it wins
+	// over FakeLag/Ticks choke decisions regardless of feature order. Send
+	// STATE reads use G::Choking (inverse), not this flag.
+	inline bool SendPacket = false;
 
 	inline bool UpdatingAnims = false;
 	inline bool FlipViewmodels = false;
