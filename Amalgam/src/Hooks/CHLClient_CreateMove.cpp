@@ -11,6 +11,7 @@
 #include "../Features/NoSpread/NoSpread.h"
 #include "../Features/NoSpread/NoSpreadHitscan/NoSpreadHitscan.h"
 #include "../Features/PacketManip/PacketManip.h"
+#include "../Features/PacketManip/PacketBuffer/PacketBuffer.h"
 #include "../Features/Resolver/Resolver.h"
 #include "../Features/Ticks/Ticks.h"
 #include "../Features/Visuals/Visuals.h"
@@ -114,5 +115,6 @@ MAKE_HOOK(CHLClient_CreateMove, U::Memory.GetVirtual(I::Client, 21), void,
 	if (G::SendPacket)
 		*pSendPacket = true; // force-send requests (charge reach, warp): applied after all choke decisions
 	G::SendPacket = false;
+	F::PacketBuffer.Snapshot(pCmd, *pSendPacket);
 	G::Choking = !*pSendPacket, G::LastUserCmd = pCmd;
 }

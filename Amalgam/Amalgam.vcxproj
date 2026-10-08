@@ -937,6 +937,7 @@
     <ClCompile Include="src\Features\NoSpread\NoSpreadProjectile\NoSpreadProjectile.cpp" />
     <ClCompile Include="src\Features\PacketManip\AntiAim\AntiAim.cpp" />
     <ClCompile Include="src\Features\PacketManip\FakeLag\FakeLag.cpp" />
+    <ClCompile Include="src\Features\PacketManip\PacketBuffer\PacketBuffer.cpp" />
     <ClCompile Include="src\Features\PacketManip\PacketManip.cpp" />
     <ClCompile Include="src\Features\Players\PlayerCore.cpp" />
     <ClCompile Include="src\Features\Players\PlayerUtils.cpp" />
@@ -1253,6 +1254,7 @@
     <ClInclude Include="src\Features\NoSpread\NoSpreadProjectile\NoSpreadProjectile.h" />
     <ClInclude Include="src\Features\PacketManip\AntiAim\AntiAim.h" />
     <ClInclude Include="src\Features\PacketManip\FakeLag\FakeLag.h" />
+    <ClInclude Include="src\Features\PacketManip\PacketBuffer\PacketBuffer.h" />
     <ClInclude Include="src\Features\PacketManip\PacketManip.h" />
     <ClInclude Include="src\Features\Resolver\Resolver.h" />
     <ClInclude Include="src\Features\Simulation\MovementSimulation\MovementSimulation.h" />
