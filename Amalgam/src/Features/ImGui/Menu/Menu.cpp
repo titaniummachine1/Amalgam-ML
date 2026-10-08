@@ -416,6 +416,7 @@ void CMenu::MenuAimbot(int iTab)
 					FToggle(Vars::Aimbot::Melee::SwingPrediction, FToggleEnum::Left);
 					FToggle(Vars::Aimbot::Melee::WhipTeam, FToggleEnum::Right);
 					FToggle(Vars::Aimbot::Melee::ChargeReach, FToggleEnum::Left);
+					FDropdown(Vars::Aimbot::Melee::ChargeTiming);
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{

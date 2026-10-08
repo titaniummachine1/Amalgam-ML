@@ -620,7 +620,11 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 				const int iChokeMargin = std::max(I::ClientState ? I::ClientState->chokedcommands : 0, 1);
 				const int iChargeWindow = std::max(iOutLatencyTicks + iChokeMargin, 2);
 
-				if (iTicksToSmack <= iChargeWindow)
+				// Early charges on the first tracking tick (gap close: boost
+				// carries through the whole swing delay); late fires inside
+				// the latency-compensated window (max range at smack).
+				const bool bEarly = Vars::Aimbot::Melee::ChargeTiming.Value == Vars::Aimbot::Melee::ChargeTimingEnum::Early;
+				if (iTicksToSmack <= iChargeWindow || (bEarly && m_iChargeTicks == 0))
 					m_eChargeState = ChargeState::Charge;
 				else if (++m_iChargeTicks > 25)
 				{
@@ -730,7 +734,11 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		{
 			if (m_bShouldSwing)
 				pCmd->buttons |= IN_ATTACK;
-			if (m_iDoubletapTicks && !IsChargeBusy())
+			// Orchestrated dump: on the exact charge-press tick (Charge state)
+			// ride the shift when banked so swing+charge go out together;
+			// force-send covers the unbanked case. Uncoordinated shifts stay
+			// banned by the Ticks guards while busy.
+			if (m_iDoubletapTicks && (!IsChargeBusy() || m_eChargeState == ChargeState::Charge))
 				F::Ticks.m_bDoubletap = true;
 		}
 

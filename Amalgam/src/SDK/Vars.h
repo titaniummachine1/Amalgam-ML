@@ -395,6 +395,9 @@ NAMESPACE_BEGIN(Vars)
 			CVar(SwingPrediction, "Swing prediction", true);
 			CVar(WhipTeam, "Whip team", false);
 			CVar(ChargeReach, "Charge reach", false);
+			CVarEnum(ChargeTiming, "Charge timing", 1, NONE, nullptr,
+				VA_LIST("Early", "Late"),
+				Early, Late);
 			CVar(CritRefill, "Auto crit refill", false);
 			CVar(CritRefillAmount, "Crit refill amount", 5, SLIDER_CLAMP, 1, 25);
 
