@@ -62,31 +62,76 @@ void CSmartJump::ArmGrab(CTFPlayer* pLocal, float flNeed)
 
 void CSmartJump::RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
-	// grounded + moving with intent only; airborne/standing still need no help
+	// grounded + intent only. no speed gate: pressing into an obstacle from
+	// standstill must fire too (minecraft parity).
 	if (!pLocal->m_hGroundEntity())
 		return;
 	if (!(pCmd->buttons & (IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT)))
 		return;
-	Vec3 vVel = pLocal->m_vecVelocity();
-	if (vVel.Length2D() < 50.f)
-		return;
-	Vec3 vDir = { vVel.x, vVel.y, 0.f };
-	vDir.Normalize2D();
 
-	// Single probe: AABB 1u ahead along motion, 72u up, hull sweep down.
-	// startsolid up top = sheer wall (don't act weird walking into walls);
-	// open air = nothing there; <= step height = walkable. One trace.
+	// wishdir from move intent rotated by yaw (NOT velocity: brushing a wall
+	// means velocity points along it while intent points into/over it).
+	Vec3 vForward, vRight;
+	Math::AngleVectors(pCmd->viewangles, &vForward, &vRight, nullptr);
+	vForward.Normalize2D(), vRight.Normalize2D();
+	Vec3 vWish = { vForward.x * pCmd->forwardmove + vRight.x * pCmd->sidemove,
+		vForward.y * pCmd->forwardmove + vRight.y * pCmd->sidemove, 0.f };
+	if (vWish.Length2DSqr() < 0.001f)
+		return;
+	vWish.Normalize2D();
+	const Vec3 vOrigWish = vWish;
+
 	const Vec3 vOrigin = pLocal->m_vecOrigin();
-	const Vec3 vTop = vOrigin + Vec3(vDir.x, vDir.y, 0) + Vec3(0, 0, 72);
-	CGameTrace trace = {};
 	CTraceFilterWorldAndPropsOnly filter = {};
 	filter.pSkip = pLocal;
-	SDK::TraceHull(vTop, vTop - Vec3(0, 0, 144), pLocal->m_vecMins(), pLocal->m_vecMaxs(), pLocal->SolidMask(), &filter, &trace);
-	if (!trace.DidHit() || trace.startsolid || trace.allsolid)
-		return;
-	const float flNeed = trace.endpos.z - vOrigin.z;
-	if (flNeed <= SJ_STEP)
-		return;
+
+	// Slide-projection loop: probe ahead, and when the probe is inside a wall
+	// at obstacle height, project the wish parallel to that wall's face and
+	// probe again. Corners/curves resolve over iterations (8 max); a step
+	// (<= 18u) stops the loop immediately, never slides.
+	float flNeed = -1.f;
+	for (int i = 0; i < 8; i++)
+	{
+		// standard probe, 1u out along (possibly slid) wish: 72u up, sweep down
+		const Vec3 vTop = vOrigin + Vec3(vWish.x, vWish.y, 0) + Vec3(0, 0, 72);
+		CGameTrace trace = {};
+		SDK::TraceHull(vTop, vTop - Vec3(0, 0, 144), pLocal->m_vecMins(), pLocal->m_vecMaxs(), pLocal->SolidMask(), &filter, &trace);
+		if (!trace.DidHit())
+			return; // open air/gap ahead: nothing to jump over
+		if (!trace.startsolid && !trace.allsolid)
+		{
+			flNeed = trace.endpos.z - vOrigin.z;
+			if (flNeed <= SJ_STEP)
+				return; // steppable: engine walks over it, no slide needed
+			break; // jumpable obstacle found along current wish
+		}
+
+		// probe is inside a wall: fall back, get its face at feet level...
+		CGameTrace wall = {};
+		SDK::TraceHull(vOrigin + Vec3(0, 0, 1), vOrigin + Vec3(vWish.x, vWish.y, 0) * 4.f + Vec3(0, 0, 1),
+			pLocal->m_vecMins(), pLocal->m_vecMaxs(), pLocal->SolidMask(), &filter, &wall);
+		if (!wall.DidHit() || wall.plane.normal.z >= 0.707f)
+			return; // no wall face (pillar edge etc.): don't invent slides
+		Vec3 vN = { wall.plane.normal.x, wall.plane.normal.y, 0.f };
+		if (vN.Length2DSqr() < 0.001f)
+			return;
+		vN.Normalize2D();
+
+		// ...and slide the wish parallel to it (projection picks the side
+		// closest to intent by construction). wish stays unit length.
+		const float flD = vWish.x * vN.x + vWish.y * vN.y;
+		vWish.x -= vN.x * flD;
+		vWish.y -= vN.y * flD;
+		if (vWish.Length2DSqr() < 0.01f)
+		{
+			// dead head-on: pick the perpendicular closest to original intent
+			const Vec3 vP1 = { -vN.y, vN.x, 0.f }, vP2 = { vN.y, -vN.x, 0.f };
+			vWish = (vP1.x * vOrigWish.x + vP1.y * vOrigWish.y) > (vP2.x * vOrigWish.x + vP2.y * vOrigWish.y) ? vP1 : vP2;
+		}
+		vWish.Normalize2D();
+	}
+	if (flNeed < 0.f)
+		return; // 8 walls, no jumpable face: give up (doorway etc.)
 
 	const int iMoveButtons = pCmd->buttons & ~(IN_JUMP | IN_ATTACK | IN_ATTACK2);
 
