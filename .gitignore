@@ -361,3 +361,10 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# local-only artifacts (never publish)
+Amalgam/crash_log.txt
+ml/demodump_rs/target/
+*.pt
+*.db
+*.npz
+

@@ -123,7 +123,7 @@ def load(tag):
         # Build mask for kept rows: Fall[positions of good in Bk order].
         # good is over SUF keys (=Bk keys), so direct index works.
         Fm = Fall[np.where(good)[0]]
-        print(tag, 'force-mask loaded, masked tick frac=%.4f' % float(~Fm.mean() if Fm.size else 0), flush=True)
+        print(tag, 'force-mask loaded, masked tick frac=%.4f' % float((~Fm).mean() if Fm.size else 0), flush=True)
     return Xs, Hd, Vd, Fm
 
 
