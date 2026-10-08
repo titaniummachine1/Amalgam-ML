@@ -70,11 +70,20 @@ def unroll(net, xb):
     return torch.stack(traj, dim=1)
 
 
-def dense_loss(net, xb, Hb, Vb, w=None):
+def dense_loss(net, xb, Hb, Vb, w=None, Fm=None):
     traj = unroll(net, xb)  # (B,66,2)
     tgt = torch.from_numpy(np.array(Hb))
     m = torch.from_numpy(np.array(Vb)).unsqueeze(-1).float()
-    err = torch.abs(traj - tgt).amax(dim=-1, keepdim=True)
+    if Fm is not None:
+        # Force supervision mask: horizon ticks corrupted by external impulses
+        # (damage knockback transient) carry no reward/penalty. History stays
+        # (rows kept, warmup intact); only the loss weight is zeroed.
+        m = m * torch.from_numpy(np.array(Fm)).unsqueeze(-1).float()
+    # GUARD (2026-10-08, root-caused via anomaly detection): sanitize BEFORE
+    # amax. NaN targets on invalid/masked ticks entering amax emit NaN grads
+    # (AmaxBackward routes into NaN argmax), clip_grad_norm -> NaN weights.
+    diff = (traj - tgt).nan_to_num(0.0)
+    err = diff.abs().amax(dim=-1, keepdim=True)  # Chebyshev per tick
     inside = (err <= HB).float()
     lin = torch.log((err + 1.0) / (HB + 1.0)) * inside
     lout = 4.0 * ((err - HB) / HB).clamp_min(0.0) ** 2 * (1.0 - inside)
@@ -97,15 +106,29 @@ def load(tag):
     mk = np.load(os.path.join(D, tag + 'Cmask.npz'))['keep']
     sol = kk[:, 3] == 3
     good = sol & mk
+    # NOTE: no row dropping for force ticks (momentum training: history always
+    # moves forward per-player, chronological). Force supervision mask applied
+    # in loss via Dforce (rows kept, force ticks zero-weighted).
     Xs = np.array(d['X'])[good]
     sidx = np.where(sol)[0]
     gpos = np.where(good[sidx])[0]
     Hd, Vd = dn['Hd'][gpos], dn['Vd'][gpos]
-    return Xs, Hd, Vd
+    # per-row force mask aligned to kept rows (full-key file -> subset)
+    Fm = None
+    fp = os.path.join(D, tag + 'Dforce.npz')
+    if os.path.exists(fp):
+        Fall = np.load(fp)['F']
+        # Fall is keyed to full Bk; map: good positions in full-key order.
+        # Bk keys == SUF keys here (B line); Fall rows align to Bk.
+        # Build mask for kept rows: Fall[positions of good in Bk order].
+        # good is over SUF keys (=Bk keys), so direct index works.
+        Fm = Fall[np.where(good)[0]]
+        print(tag, 'force-mask loaded, masked tick frac=%.4f' % float(~Fm.mean() if Fm.size else 0), flush=True)
+    return Xs, Hd, Vd, Fm
 
 
-Xtr, Htr, Vtr = load('train')
-Xev, Hev, Vev = load('eval')
+Xtr, Htr, Vtr, Ftr = load('train')
+Xev, Hev, Vev, Fev = load('eval')
 gr_tr = Xtr[:, -1, 3]
 w_tr = 1.0 + AIR_W * (1.0 - (gr_tr > 0.5).astype(np.float32))
 print('train', Xtr.shape, 'eval', Xev.shape, 'AIR_W=%.1f airfrac=%.3f' % (
@@ -127,7 +150,8 @@ for ep in range(EPOCHS):
         idx = perm[i:i + B]
         xb = torch.from_numpy(np.array(Xtr[idx]))
         opt.zero_grad()
-        loss = dense_loss(net, xb, Htr[idx], Vtr[idx], w_tr[idx])
+        loss = dense_loss(net, xb, Htr[idx], Vtr[idx], w_tr[idx],
+                          Ftr[idx] if Ftr is not None else None)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
         opt.step()
@@ -137,7 +161,8 @@ for ep in range(EPOCHS):
         el, ew = [], []
         for i in range(0, len(Xev), 512):
             xb = torch.from_numpy(np.array(Xev[i:i + 512]))
-            el.append(dense_loss(net, xb, Hev[i:i + 512], Vev[i:i + 512]).item())
+            el.append(dense_loss(net, xb, Hev[i:i + 512], Vev[i:i + 512], None,
+                                Fev[i:i + 512] if Fev is not None else None).item())
             ew.append(len(xb))
         em = float(np.average(el, weights=ew))
         es = float(np.sqrt(np.average((np.array(el) - em) ** 2, weights=ew)))
