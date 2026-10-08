@@ -2257,7 +2257,7 @@ namespace ImGui
 
 				// shift based on number of digits in var size
 				ImVec2 vOriginalPos3 = GetCursorPos();
-				SetCursorPos(vOriginalPos2 + ImVec2(H::Draw.Scale(40 + 6 * int(log10(std::max(pVar->size(), 1ui64)))), 0));
+				SetCursorPos(vOriginalPos2 + ImVec2(H::Draw.Scale(40 + 6 * int(log10(std::max(pVar->size(), size_t(1))))), 0));
 				TextColored(bFlagActive ? F::Render.Active : F::Render.Inactive, (bHovered ? sEntry : TruncateText(sEntry, vSize.x - (bFlagActive ? 81 : 57))).c_str());
 				SameLine(); DebugDummy({ H::Draw.Scale(!GetCurrentWindow()->ScrollbarY ? 16 : 9), 0 });
 

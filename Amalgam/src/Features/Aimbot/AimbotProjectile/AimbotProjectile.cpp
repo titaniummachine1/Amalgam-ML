@@ -6,7 +6,10 @@
 #include "../../World/World.h"
 #include "../AutoAirblast/AutoAirblast.h"
 #include "../../AntiCheatCompatibility/AntiCheatCompatibility.h"
+#include "../../Simulation/BehaviorPrediction/BehaviorPrediction.h"
+#include "../../../Utils/BootLog/BootLog.h"
 #include <numeric>
+#include <fstream>
 
 //#define SPLASH_DEBUG1 // trace splash visualization
 //#define SPLASH_DEBUG2 // plane splash visualization
@@ -619,6 +622,27 @@ static inline void HandleFace(Face_t& tFace, std::vector<Setup_t>& vPoints, floa
 #endif
 			if (bInside && I::EngineTrace->GetPointContents(vPoint) & MASK_SOLID)
 				continue;
+
+			// backface cull: the splash face must face the SHOT pos (muzzle with
+			// weapon offset, NOT the eye - rockets spawn beside corners and
+			// can still reach what the eye can't see). A normal pointing away
+			// (dot > 0) means the point sits on the far side of thin geometry
+			// from the muzzle - our rocket hits the near face first, never
+			// this point. Cull it before the visibility trace (saves it too).
+			{
+				Vec3 vDir = (vPoint - (tInfo.m_vLocalEye + tInfo.m_vOffset)).Normalized();
+				if (vDir.Dot(tFace.m_vNormal) > 0.f)
+					continue;
+			}
+			// second pass, target side: the face must also face the target's
+			// AABB center (splash is evaluated against the center). A normal
+			// pointing away from the center (dot < 0) puts the surface itself
+			// between explosion and target - the splash trace would fail.
+			// Floor/ceiling/side splashes pass (normal toward target side).
+			{
+				if ((vTargetCenter - vPoint).Dot(tFace.m_vNormal) < 0.f)
+					continue;
+			}
 
 			int nSubMask = nMask;
 			if (!bInside)
@@ -1593,12 +1617,64 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 	SplashHistory_t mSplashHistory = {};
 
 	int iMaxTime = TIME_TO_TICKS(std::min(m_tProjInfo.m_flLifetime, Vars::Aimbot::Projectile::MaxSimulationTime.Value));
+	// Learned rollout (BehaviorPrediction, denseC): pre-roll once per aim run.
+	// When enabled AND history valid, its positions REPLACE MoveSim's below.
+	// Eval log (tick,ent,step,px,py) joins offline with enemy actuals for hit-rate.
+	BehaviorPrediction_t tBehav[132] = {};
+	int iBehavN = 0;
+	const bool bUseBehav = Vars::Aimbot::Projectile::BehaviorPrediction.Value
+		&& tTarget.m_pEntity && tTarget.m_pEntity->IsPlayer()
+		&& F::BehaviorPrediction.IsHistoryValid(tTarget.m_pEntity->entindex());
+	if (bUseBehav)
+	{
+		{ static int s_n = 0; if (s_n < 3) { s_n++; BootLog("BEHAV predict"); } }
+		iBehavN = F::BehaviorPrediction.Predict(
+			tTarget.m_pEntity->entindex(), iMaxTime + 1, tBehav, 132);
+		// Eval log (tick,ent,step,px,py) joins offline with enemy actuals.
+		// Logged whenever predicting (same toggle); ~5MB/min, disable after session.
+		if (iBehavN > 0)
+		{
+			static std::ofstream s_EvalLog;
+			if (!s_EvalLog.is_open())
+			{
+				char tmp[MAX_PATH] = {};
+				if (GetTempPathA(MAX_PATH, tmp))
+				{
+					char path[MAX_PATH] = {};
+					_snprintf_s(path, sizeof(path), _TRUNCATE,
+						"%samalgam_behaveval.csv", tmp);
+					s_EvalLog.open(path, std::ios::out | std::ios::app);
+					if (s_EvalLog.is_open())
+						s_EvalLog << "tick,ent,step,px,py\n";
+				}
+			}
+			if (s_EvalLog.is_open())
+			{
+				const int iTick = pLocal ? pLocal->m_nTickBase() : 0;
+				const int iEnt = tTarget.m_pEntity->entindex();
+				for (int s = 0; s < iBehavN; s++)
+				{
+					char line[128] = {};
+					_snprintf_s(line, sizeof(line), _TRUNCATE, "%d,%d,%d,%.2f,%.2f\n",
+						iTick, iEnt, s + 1,
+						tBehav[s].m_vPredicted.x, tBehav[s].m_vPredicted.y);
+					s_EvalLog << line;
+				}
+			}
+		}
+	}
+	int iBehavStep = 0;
 	for (int i = 1 - TIME_TO_TICKS(m_tInfo.m_flLatency); i <= iMaxTime; i++)
 	{
 		if (!m_tMoveStorage.m_bFailed)
 		{
 			F::MoveSim.RunTick(m_tMoveStorage);
 			tTarget.m_vPos = m_tMoveStorage.m_vPredictedOrigin;
+			if (bUseBehav && i >= 0 && iBehavStep < iBehavN)
+			{
+				tTarget.m_vPos = tBehav[iBehavStep].m_vPredicted;
+				iBehavStep++;
+			}
 		}
 		if (i < 0)
 			continue;
@@ -1889,6 +1965,9 @@ static inline void DrawVisuals(int iResult, Target_t& tTarget, std::vector<Vec3>
 bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
 	const int nWeaponID = pWeapon->GetWeaponID();
+	// Confirm-or-hold gate: did WE add IN_ATTACK this tick (vs user holding M1
+	// or another feature)? Only our own fire can be vetoed by verification.
+	const bool bUserFiring = (G::OriginalCmd.buttons & IN_ATTACK) != 0;
 
 	static int iStaticAimType = Vars::Aimbot::General::AimType.Value;
 	const int iLastAimType = iStaticAimType;
@@ -1973,7 +2052,38 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 		{
 			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
 			DrawVisuals(iResult, tTarget, m_vPlayerPath, m_vProjectilePath, m_vBoxes);
-			Aim(pCmd, tTarget.m_vAngleTo);
+		Aim(pCmd, tTarget.m_vAngleTo);
+		// Shot diagnostic: solution vs actually-applied angles + trigger state.
+		// Joins offline against outcomes to prove/disprove (stale angles + held
+		// trigger) vs (psilent restore race) vs (splash-by-design ground shots).
+		{
+			static std::ofstream s_ShotLog;
+			if (!s_ShotLog.is_open())
+			{
+				char tmp[MAX_PATH] = {};
+				if (GetTempPathA(MAX_PATH, tmp))
+				{
+					char path[MAX_PATH] = {};
+					_snprintf_s(path, sizeof(path), _TRUNCATE,
+						"%samalgam_shots.csv", tmp);
+					s_ShotLog.open(path, std::ios::out | std::ios::app);
+					if (s_ShotLog.is_open())
+						s_ShotLog << "tick,ent,sol_pitch,sol_yaw,app_pitch,app_yaw,buttons,attacking,psilent\n";
+				}
+			}
+			if (s_ShotLog.is_open() && (pCmd->buttons & IN_ATTACK))
+			{
+				char line[192] = {};
+				_snprintf_s(line, sizeof(line), _TRUNCATE, "%d,%d,%.2f,%.2f,%.2f,%.2f,%d,%d,%d\n",
+					pLocal ? pLocal->m_nTickBase() : 0,
+					tTarget.m_pEntity ? tTarget.m_pEntity->entindex() : -1,
+					tTarget.m_vAngleTo.x, tTarget.m_vAngleTo.y,
+					pCmd->viewangles.x, pCmd->viewangles.y,
+					pCmd->buttons, (G::Attacking == 1) ? 1 : 0,
+					G::PSilentAngles ? 1 : 0);
+				s_ShotLog << line;
+			}
+		}
 			break;
 		}
 
@@ -2059,6 +2169,60 @@ bool CAimbotProjectile::RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 		DrawVisuals(iResult, tTarget, m_vPlayerPath, m_vProjectilePath, m_vBoxes);
 
 		Aim(pCmd, tTarget.m_vAngleTo);
+		// Confirm-or-hold: if WE added fire this tick (user NOT holding M1) the
+		// stored SIMULATED projectile path (gravity + bounces, computed by
+		// ProjSim for this exact solution) must still reach the target's
+		// current predicted AABB within splash slack. Stale solutions (target
+		// moved/died/went dormant since the solve, record drift) become holds.
+		// Manual fire is never touched.
+		if (!bUserFiring && (pCmd->buttons & IN_ATTACK)
+			&& Vars::Aimbot::Projectile::ConfirmShot.Value)
+		{
+			bool bConfirmed = false;
+			auto pTarg = (tTarget.m_pEntity && tTarget.m_pEntity->IsPlayer())
+				? tTarget.m_pEntity->As<CTFPlayer>() : nullptr;
+			if (pTarg && pTarg->IsAlive()
+				&& !tTarget.m_pEntity->IsDormant() && !m_vProjectilePath.empty())
+			{
+				const Vec3 vMins = tTarget.m_vPos + tTarget.m_pEntity->m_vecMins();
+				const Vec3 vMaxs = tTarget.m_vPos + tTarget.m_pEntity->m_vecMaxs();
+				const float flSlack = m_tInfo.m_flRadius + 4.f;
+				// nearest simulated path point to the target's CURRENT predicted pos
+				Vec3 vImpact = m_vProjectilePath.front();
+				float flBest = (vImpact - tTarget.m_vPos).LengthSqr();
+				for (const Vec3& vP : m_vProjectilePath)
+				{
+					const float flD = (vP - tTarget.m_vPos).LengthSqr();
+					if (flD < flBest)
+					{
+						flBest = flD;
+						vImpact = vP;
+					}
+				}
+				const float flX = std::max(vMins.x - vImpact.x, std::max(0.f, vImpact.x - vMaxs.x));
+				const float flY = std::max(vMins.y - vImpact.y, std::max(0.f, vImpact.y - vMaxs.y));
+				const float flZ = std::max(vMins.z - vImpact.z, std::max(0.f, vImpact.z - vMaxs.z));
+				if (sqrtf(flX * flX + flY * flY + flZ * flZ) <= flSlack)
+				{
+					bConfirmed = true;
+					// splash only: re-trace impact -> target eye AT FIRE TIME.
+					// Solve-time splash validation goes stale when the target
+					// drifts behind thin cover; the impact lands but the splash
+					// doesn't reach. One trace, fire ticks only.
+					if (m_tInfo.m_flRadius > 0.f)
+					{
+						CGameTrace trace2 = {};
+						CTraceFilterWorldAndPropsOnly filter2 = {};
+						SDK::Trace(vImpact, tTarget.m_vPos + m_tInfo.m_vTargetEye,
+							MASK_SOLID, &filter2, &trace2);
+						if (trace2.fraction != 1.f)
+							bConfirmed = false;
+					}
+				}
+			}
+			if (!bConfirmed)
+				pCmd->buttons &= ~IN_ATTACK;
+		}
 		if (G::PSilentAngles)
 		{
 			switch (nWeaponID)

@@ -72,6 +72,8 @@ class CWorld
 {
 private:
 	bool FaceValid(const std::vector<Vec3>& vVertices, const Vec3* pNormal, const Vec3* pMins = nullptr, const Vec3* pMaxs = nullptr);
+	void CacheSingleBoxBrush(cbrush_t* pBrush); // SEH-unsafe body: call only under __try
+	void CacheSinglePlaneBrush(cbrush_t* pBrush);
 
 	VerticesValidCallback* m_pVerticesValidCallback = &s_fVerticesValid;
 	BoundsValidCallback* m_pBoundsValidCallback = &s_fBoundsValid;

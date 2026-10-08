@@ -1,5 +1,7 @@
 #include "../World/World.h"
 
+#include "../../Utils/ExceptionHandler/ExceptionHandler.h"
+
 #include <numeric>
 
 class CEntityEnumerator : public IPartitionEnumerator
@@ -157,8 +159,16 @@ void CWorld::Cache()
 	if (!m_iNeedsCache)
 		return;
 
-	CacheBoxBrushes();
-	CachePlaneBrushes();
+	// Map data is untrusted: bad brush indices raise inside the brush caches
+	// and are skipped via SEH. The silence window is held ONLY around the
+	// SEH-guarded brush caches (it lives in this frame, not in the __try
+	// frames, so no C2712): CacheProps/CacheEntities run unguarded, so a
+	// real crash there must still log normally (never silence unguarded code).
+	{
+		struct CSilenceScope { CSilenceScope() { U::ExceptionHandler.PushSilent(); } ~CSilenceScope() { U::ExceptionHandler.PopSilent(); } } sSilence;
+		CacheBoxBrushes();
+		CachePlaneBrushes();
+	}
 	CacheProps();
 	CacheEntities();
 }
@@ -167,6 +177,8 @@ void CWorld::CacheBoxBrushes()
 {
 	if (!(m_iNeedsCache & FaceTypeEnum::BoxBrush))
 		return;
+	if (!I::BSPData)
+		return; // no map loaded - nothing to cache
 
 	SDK::Output(__FUNCTION__, "Cache start", {}, OUTPUT_DEBUG);
 
@@ -174,9 +186,29 @@ void CWorld::CacheBoxBrushes()
 
 	for (int iBrush = 0; iBrush < I::BSPData->numbrushes; iBrush++)
 	{
+		// Map data is untrusted (broken/custom maps ship garbage indices;
+		// measured AV at the surface read below). Skip bad brushes, never die.
+		// NOTE: keep this frame free of objects with destructors (/EHsc: C2712).
 		cbrush_t* pBrush = &I::BSPData->map_brushes[iBrush];
+		__try
+		{
+			CacheSingleBoxBrush(pBrush);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			// garbage brush data (bad surface/box indices): drop the brush,
+			// keep caching the rest. Never crash on map data.
+			m_mFaceCache.erase(pBrush);
+		}
+	}
+
+	SDK::Output(__FUNCTION__, "Cache finish", {}, OUTPUT_DEBUG);
+}
+
+void CWorld::CacheSingleBoxBrush(cbrush_t* pBrush)
+{
 		if (!pBrush->IsBox())
-			continue;
+			return;
 
 		cboxbrush_t* pBoxBrush = &I::BSPData->map_boxbrushes[pBrush->GetBox()];
 
@@ -215,15 +247,14 @@ void CWorld::CacheBoxBrushes()
 
 			m_mFaceCache[pBrush].emplace_back(vVertices, vNormal, FaceTypeEnum::BoxBrush);
 		}
-	}
-
-	SDK::Output(__FUNCTION__, "Cache finish", {}, OUTPUT_DEBUG);
 }
 
 void CWorld::CachePlaneBrushes()
 {
 	if (!(m_iNeedsCache & FaceTypeEnum::PlaneBrush))
 		return;
+	if (!I::BSPData)
+		return; // no map loaded - nothing to cache
 
 	SDK::Output(__FUNCTION__, "Cache start", {}, OUTPUT_DEBUG);
 
@@ -231,9 +262,25 @@ void CWorld::CachePlaneBrushes()
 
 	for (int iBrush = 0; iBrush < I::BSPData->numbrushes; iBrush++)
 	{
+		// NOTE: keep this frame free of objects with destructors (/EHsc: C2712).
 		cbrush_t* pBrush = &I::BSPData->map_brushes[iBrush];
+		__try
+		{
+			CacheSinglePlaneBrush(pBrush);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			// garbage brush/side data: drop the brush, keep caching the rest.
+		}
+	}
+
+	SDK::Output(__FUNCTION__, "Cache finish", {}, OUTPUT_DEBUG);
+}
+
+void CWorld::CacheSinglePlaneBrush(cbrush_t* pBrush)
+{
 		if (pBrush->IsBox())
-			continue;
+			return;
 
 		std::vector<Plane_t> vPlanes = {}; vPlanes.reserve(pBrush->numsides);
 		for (int iSide = 0; iSide != pBrush->numsides; iSide++)
@@ -247,13 +294,10 @@ void CWorld::CachePlaneBrushes()
 		}
 		CPhysConvex* pConvex = I::PhysicsCollision->ConvexFromPlanes(reinterpret_cast<float*>(vPlanes.data()), int(vPlanes.size()), 0.f);
 		if (!pConvex)
-			continue;
+			return;
 
 		GetFacesForConvex(pConvex, m_mFaceCache[pBrush], 0.f, FaceTypeEnum::PlaneBrush);
 		I::PhysicsCollision->ConvexFree(pConvex);
-	}
-
-	SDK::Output(__FUNCTION__, "Cache finish", {}, OUTPUT_DEBUG);
 }
 
 void CWorld::CacheProps()

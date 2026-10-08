@@ -5,6 +5,9 @@
 #include "../Features/CritHack/CritHack.h"
 #include "../Features/EnginePrediction/EnginePrediction.h"
 #include "../Features/Misc/Misc.h"
+#include "../Features/Misc/MoveLog/MoveLog.h"
+#include "../Features/Simulation/BehaviorPrediction/BehaviorPrediction.h"
+#include "../Utils/BootLog/BootLog.h"
 #include "../Features/NoSpread/NoSpread.h"
 #include "../Features/NoSpread/NoSpreadHitscan/NoSpreadHitscan.h"
 #include "../Features/PacketManip/PacketManip.h"
@@ -43,6 +46,8 @@ MAKE_HOOK(CHLClient_CreateMove, U::Memory.GetVirtual(I::Client, 21), void,
 	if (!pLocal)
 		return;
 
+	{ static int s_n = 0; if (s_n < 3) { s_n++; BootLog("CREATEMOVE tick"); } }
+
 	bool* pSendPacket = reinterpret_cast<bool*>(uintptr_t(_AddressOfReturnAddress()) + 0x20);
 	CUserCmd* pCmd = &I::Input->m_pCommands[sequence_number % MULTIPLAYER_BACKUP];
 
@@ -52,6 +57,45 @@ MAKE_HOOK(CHLClient_CreateMove, U::Memory.GetVirtual(I::Client, 21), void,
 		F::Spectate.CreateMove(pCmd);
 		F::Backtrack.CreateMove(pCmd);
 		F::Misc.RunPre(pLocal, pCmd);
+		F::MoveLog.CreateMove(pLocal, pCmd);
+		// BehaviorPrediction ring feed (gated: runs only when the user enabled
+		// Behavior prediction; ring maintenance is ~66 floats/player/tick and
+		// inference runs only on demand inside the aimbot override).
+		// Matches training sampling (66Hz server ticks) so eval dynamics == train dynamics.
+		if (Vars::Aimbot::Projectile::BehaviorPrediction.Value)
+		{
+			for (auto pEntity : H::Entities.GetGroup(EntityEnum::PlayerEnemy))
+			{
+				if (!pEntity)
+					continue;
+				auto pEnemy = pEntity->As<CTFPlayer>();
+				if (!pEnemy || !pEnemy->IsAlive() || pEnemy->IsAGhost() || pEnemy->IsDormant())
+					continue;
+				const Vec3 vEye = pEnemy->GetEyeAngles();
+				const Vec3 vOrg = pEnemy->m_vecOrigin();
+				// live weapon classes for the E-generation weapon dims: active
+				// handle + loadout enumeration, mapped through the shared
+				// table (ml/build_ds_all.py WCLASS; defid deliberately unused
+				// for train/live parity). Unknown -> -1 -> zeros downstream.
+				int iWClsID = -1;
+				if (auto pWep = I::ClientEntityList->GetClientEntityFromHandle(pEnemy->m_hActiveWeapon()))
+					iWClsID = int(pWep->GetClassID());
+				int iWLd[3] = { -1, -1, -1 };
+				for (int s = 0; s < 6; s++)
+				{
+					auto pW = pEnemy->GetWeaponFromSlot(s);
+					if (!pW)
+						continue;
+					int slot = -1; float c = 0.f;
+					CBehaviorPrediction::WeaponFeat(int(pW->GetClassID()), &slot, &c);
+					if (slot >= 0 && slot < 3 && iWLd[slot] < 0)
+						iWLd[slot] = int(pW->GetClassID());
+				}
+				F::BehaviorPrediction.PushState(pEnemy->entindex(),
+					vOrg, vEye.y, (pEnemy->m_fFlags() & 1) != 0, pEnemy->m_iClass(),
+					-1, iWClsID, iWLd[0], iWLd[1], iWLd[2]);
+			}
+		}
 	F::Ticks.Start(pLocal, pCmd);
 		F::Aimbot.Run(pLocal, pWeapon, pCmd);
 	F::Ticks.End(pLocal, pCmd);

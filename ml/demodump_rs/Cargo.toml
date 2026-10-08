@@ -1,0 +1,15 @@
+[package]
+name = "demospike_rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tf-demo-parser = "0.7.1"
+
+[[bin]]
+name = "demospike_rs"
+path = "src/main.rs"
+
+[[bin]]
+name = "hashprobe"
+path = "src/hashprobe.rs"

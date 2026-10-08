@@ -929,6 +929,7 @@
     <ClCompile Include="src\Features\ImGui\Menu\Menu.cpp" />
     <ClCompile Include="src\Features\Misc\AutoVote\AutoVote.cpp" />
     <ClCompile Include="src\Features\Misc\Misc.cpp" />
+    <ClCompile Include="src\Features\Misc\MoveLog\MoveLog.cpp" />
     <ClCompile Include="src\Features\NetworkFix\NetworkFix.cpp" />
     <ClCompile Include="src\Features\NoSpread\NoSpread.cpp" />
     <ClCompile Include="src\Features\NoSpread\NoSpreadHitscan\NoSpreadHitscan.cpp" />
@@ -940,6 +941,7 @@
     <ClCompile Include="src\Features\Players\PlayerUtils.cpp" />
     <ClCompile Include="src\Features\Resolver\Resolver.cpp" />
     <ClCompile Include="src\Features\Simulation\MovementSimulation\MovementSimulation.cpp" />
+    <ClCompile Include="src\Features\Simulation\BehaviorPrediction\BehaviorPrediction.cpp" />
     <ClCompile Include="src\Features\Simulation\ProjectileSimulation\ProjectileSimulation.cpp" />
     <ClCompile Include="src\Features\Spectate\Spectate.cpp" />
     <ClCompile Include="src\Features\Ticks\Ticks.cpp" />
@@ -1242,6 +1244,7 @@
     <ClInclude Include="src\Features\ImGui\Fonts\Roboto\RobotoMedium.h" />
     <ClInclude Include="src\Features\Misc\AutoVote\AutoVote.h" />
     <ClInclude Include="src\Features\Misc\Misc.h" />
+    <ClInclude Include="src\Features\Misc\MoveLog\MoveLog.h" />
     <ClInclude Include="src\Features\NetworkFix\NetworkFix.h" />
     <ClInclude Include="src\Features\NoSpread\NoSpread.h" />
     <ClInclude Include="src\Features\NoSpread\NoSpreadHitscan\NoSpreadHitscan.h" />
@@ -1251,6 +1254,8 @@
     <ClInclude Include="src\Features\PacketManip\PacketManip.h" />
     <ClInclude Include="src\Features\Resolver\Resolver.h" />
     <ClInclude Include="src\Features\Simulation\MovementSimulation\MovementSimulation.h" />
+    <ClInclude Include="src\Features\Simulation\BehaviorPrediction\BehaviorPrediction.h" />
+    <ClInclude Include="src\Features\Simulation\BehaviorPrediction\weights_soldier_denseC.h" />
     <ClInclude Include="src\Features\Simulation\ProjectileSimulation\ProjectileSimulation.h" />
     <ClInclude Include="src\Features\Spectate\Spectate.h" />
     <ClInclude Include="src\Features\Ticks\Ticks.h" />
