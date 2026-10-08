@@ -256,9 +256,10 @@ void CSmartJump::RunSmart(CTFPlayer* pLocal, CUserCmd* pCmd)
 	if (iApex < 2)
 		return; // jump goes nowhere (ceiling etc.)
 
-	// Coast with the aimbot's movement sim: identical inputs, no jump.
-	// SimGuard restores on every path; failed storage is never simmed.
-	const int iWindow = iApex + 2 < SJ_MAXTICKS ? iApex + 2 : SJ_MAXTICKS;
+	// Coast with the aimbot's movement sim: identical inputs, no jump. Never
+	// past the peak: arrival while falling is dead air, the window ends at
+	// the apex. SimGuard restores on every path; failed storage is never simmed.
+	const int iWindow = iApex < SJ_MAXTICKS ? iApex : SJ_MAXTICKS;
 	int iWallTick = -1;
 	Vec3 vWallPos = {};
 	{
@@ -311,20 +312,14 @@ void CSmartJump::RunSmart(CTFPlayer* pLocal, CUserCmd* pCmd)
 	if (flNeed < 0.f)
 		return;
 
-	// Latest-tick rule against the MEASURED arc: first airtime tick clearing
-	// need + margin. Waiting one more tick leaves airtime iArrive - 1, which
-	// still clears iff iArrive - 1 >= iClear. Otherwise jump now. Regular
-	// posture only: anything needing duck falls through to auto on arrival.
-	int iClear = -1;
-	for (int t = 1; t <= iApex; t++)
-	{
-		if (flArc[t] >= flNeed + SJ_CLEAR) { iClear = t; break; }
-	}
-	if (iClear < 0)
-		return;
+	// Fire exactly when jumping NOW clears but jumping NEXT tick wouldn't:
+	// arrival ticks shrink by one per real tick, so next-tick airtime is
+	// iArrive - 1. Regular posture only: anything needing duck falls
+	// through to auto on arrival.
 	const int iArrive = iWallTick - 1; // contact happened ~1 tick before stuck registered
-	const int iAt = iArrive < iApex ? iArrive : iApex;
-	if (iArrive < 1 || (iArrive <= iClear + 1 && flArc[iAt] >= flNeed + SJ_CLEAR))
+	const bool bClearsNow = iArrive >= 1 && iArrive <= iApex && flArc[iArrive] >= flNeed + SJ_CLEAR;
+	const bool bClearsNext = iArrive - 1 >= 1 && iArrive - 1 <= iApex && flArc[iArrive - 1] >= flNeed + SJ_CLEAR;
+	if (iArrive < 1 || (bClearsNow && !bClearsNext))
 	{
 		pCmd->buttons |= IN_JUMP;
 		ArmGrab(pLocal, flNeed);
