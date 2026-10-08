@@ -728,6 +728,9 @@ NAMESPACE_BEGIN(Vars)
 			CVar(NoPush, "No push", false);
 			CVar(MovementLock, "Movement lock", false);
 			CVar(MoveLog, "Movement logger", false);
+			CVarEnum(SmartJump, "Smart jump", 0, NONE, nullptr,
+				VA_LIST("Off", "Auto jump", "Smart jump"),
+				Off, AutoJump, SmartJump);
 
 			CVar(AutoRocketJumpChokeGrounded, "Choke grounded", 1, NOSAVE | DEBUGVAR, 0, 3);
 			CVar(AutoRocketJumpChokeAir, "Choke air", 1, NOSAVE | DEBUGVAR, 0, 3);

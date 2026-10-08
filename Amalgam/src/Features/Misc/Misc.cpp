@@ -5,6 +5,7 @@
 #include "../Players/PlayerUtils.h"
 #include "../Aimbot/AutoRocketJump/AutoRocketJump.h"
 #include "../AntiCheatCompatibility/AntiCheatCompatibility.h"
+#include "SmartJump/SmartJump.h"
 
 void CMisc::RunPre(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
@@ -26,6 +27,11 @@ void CMisc::RunPre(CTFPlayer* pLocal, CUserCmd* pCmd)
 	AutoFaNJump(pLocal, pCmd);
 	AutoRevJump(pLocal, pCmd);
 	AutoStrafe(pLocal, pCmd);
+	switch (Vars::Misc::Movement::SmartJump.Value)
+	{
+	case Vars::Misc::Movement::SmartJumpEnum::AutoJump: F::SmartJump.RunAuto(pLocal, pCmd); break;
+	case Vars::Misc::Movement::SmartJumpEnum::SmartJump: F::SmartJump.RunSmart(pLocal, pCmd); break;
+	}
 	AutoPeek(pLocal, pCmd);
 	MovementLock(pLocal, pCmd);
 	BreakJump(pLocal, pCmd);
