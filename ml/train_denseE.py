@@ -1,8 +1,9 @@
-"""Weapon-input dense training (generation E, 18-dim = 14 base + 4 weapon):
+"""Weapon-input dense training (generation E, 21-dim = 14 base + 7 weapon):
 identical recipe to train_denseD.py (combat mask, force-mask supervision,
-air weight, amax-first NaN guard), PLUS 4 weapon dims: slot one-hot(3) +
-class scalar(1) appended AFTER the 14 base dims (warm-start: trunk 14 cols
-copied from denseC, 4 new cols zero-init). OUT: gru_soldier_denseE.pt"""
+air weight, amax-first NaN guard), PLUS 7 weapon dims: active slot one-hot(3)
++ active class scalar(1) + loadout slot class scalars(3) appended AFTER the
+14 base dims (warm-start: trunk 14 cols copied from denseC, 7 new cols
+zero-init). OUT: gru_soldier_denseE.pt"""
 import json
 import os
 import time
@@ -29,7 +30,7 @@ EPOCHS = int(os.environ.get('EPOCHS', '4'))
 class Net(nn.Module):
     def __init__(self, h=96):
         super().__init__()
-        self.gru = nn.GRU(18, h, batch_first=True)
+        self.gru = nn.GRU(21, h, batch_first=True)
         self.head = nn.Linear(h, 2)
 
     def forward(self, x):
@@ -49,7 +50,7 @@ def apply_friction(v, gr):
 
 
 def unroll(net, xb):
-    # 18-dim E layout: [v(2), sp, gr, dy, oh(9), wslot(3), wcls(1)].
+    # 21-dim E layout: [v(2), sp, gr, dy, oh(9), wslot(3), wcls(1), wld(3)].
     # mv/static slice 5:14 ONLY (class one-hot); weapon dims must not leak
     # into the maxspeed norm. Weapon feedback frozen @T (like gr/static):
     # the rollout predicts locomotion, not loadout switches.
@@ -60,7 +61,7 @@ def unroll(net, xb):
     p = torch.zeros_like(v)
     gr = xb[:, -1, 3:4]
     static = xb[:, -1:, 5:14]
-    wstat = xb[:, -1:, 14:18]
+    wstat = xb[:, -1:, 14:21]
     hh = h
     traj = []
     for _ in range(66):
@@ -140,8 +141,8 @@ print('train', Xtr.shape, 'eval', Xev.shape, 'AIR_W=%.1f airfrac=%.3f' % (
     AIR_W, (gr_tr < 0.5).mean()), flush=True)
 net = Net()
 def load_warm_18(net, ckpt):
-    """Warm start 18-dim E net from 14-dim denseC: trunk cols 0:14 copied,
-    weapon cols 14:18 zero-init (epoch 0 == denseC behavior exactly)."""
+    """Warm start 21-dim E net from 14-dim denseC: trunk cols 0:14 copied,
+    weapon cols 14:21 zero-init (epoch 0 == denseC behavior exactly)."""
     sd = torch.load(ckpt, map_location='cpu')
     out = {}
     for k, v in sd.items():

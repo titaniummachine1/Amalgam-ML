@@ -69,7 +69,7 @@ struct Dump {
     // modelprecache index -> path (debug/probe use; see DUMP_MODELS).
     models: HashMap<usize, String>,
     // wcls checkpoint state: last emitted weapon class per entity.
-    wlast: HashMap<usize, String>,
+    wlast: HashMap<usize, [String; 4]>,
 }
 
 fn xy(
@@ -494,27 +494,36 @@ impl MessageHandler for Dump {
                 }
             }
             // snapshot players after applying this message
-            if std::env::var("DUMP_MODELS").is_ok() && (u32::from(tick) % 500) < 2 {
-                for (idx2, e2) in self.ents.iter() {
-                    if e2.class != "CTFPlayer" || *idx2 > 6 {
-                        continue;
-                    }
-                    let h = i64_of(&e2.props, "DT_BaseCombatCharacter", "m_hActiveWeapon");
-                    let mut extra = String::new();
-                    if h > 0 {
-                        if let Some(we) = self.ents.get(&((h as usize) & 0x7FF)) {
-        let mi = i64_of(&we.props, "DT_BaseCombatWeapon", "m_iWorldModelIndex");
-        let mi = if mi > 0 { mi } else {
-            // fallback: base index (usually arms/viewmodel: less exact)
-            i64_of(&we.props, "DT_BaseEntity", "m_nModelIndex")
-        };
-                            let wi = i64_of(&we.props, "DT_BaseCombatWeapon", "m_iWorldModelIndex");
-                            let mp = if mi > 0 { self.models.get(&(mi as usize)).cloned().unwrap_or_default() } else { String::new() };
-                            let wp = if wi > 0 { self.models.get(&(wi as usize)).cloned().unwrap_or_default() } else { String::new() };
-                            extra = format!(" wcls={} mi={}:{} wi={}:{}", we.class, mi, mp, wi, wp);
-                        }
-                    }
-                    println!("WMOD tick={} ent={}{}", u32::from(tick), idx2, extra);
+            // PRODUCTION loadout inversion (verified 2026-10-08): weapon
+            // entities carry m_hOwner -> owning player. Invert per message:
+            // owner -> [slot0, slot1, slot2] classes via the WSLOT table
+            // (contract: ml/build_ds_all.py WCLASS + C++ WeaponSlotCls()).
+            // Unknown classes are dropped here (unknown bucket downstream).
+            fn wslot_of(cls: &str) -> Option<usize> {
+                match cls {
+                    "CTFRocketLauncher" | "CTFRocketLauncher_DirectHit"
+                    | "CTFRocketLauncher_AirStrike" | "CTFParticleCannon" => Some(0),
+                    "CTFShotgun_Soldier" | "CTFBuffItem" => Some(1),
+                    "CTFShovel" | "CTFKatana" | "CTFSword" => Some(2),
+                    _ => None,
+                }
+            }
+            let mut loadout: HashMap<usize, [String; 3]> = HashMap::new();
+            for e3 in self.ents.values() {
+                let slot = match wslot_of(&e3.class) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let ow = i64_of(&e3.props, "DT_BaseCombatWeapon", "m_hOwner");
+                if ow <= 0 {
+                    continue;
+                }
+                let entry = loadout.entry((ow as usize) & 0x7FF).or_insert_with(|| {
+                    [String::new(), String::new(), String::new()]
+                });
+                // first wins: a loadout holds one weapon per slot
+                if entry[slot].is_empty() {
+                    entry[slot] = e3.class.clone();
                 }
             }
             // class labels via CTFPlayerResource m_iPlayerClass[idx] (flattened array elements)
@@ -608,22 +617,31 @@ impl MessageHandler for Dump {
                         );
                     }
                 }
-                // wcls checkpoint encoding: emit the class ONLY on change per
-                // entity (else ""). Loadout switches are rare; this keeps the
-                // column near-empty in CSVs. Loader forward-fills in tick
-                // order, so the DB stays dense. First sight always emits.
-                let wc = {
-                    let cur = self.weapons(e);
-                    match self.wlast.get(idx) {
-                        Some(prev) if *prev == cur => String::new(),
-                        _ => {
-                            self.wlast.insert(*idx, cur.clone());
-                            cur
+                // wcls/w0/w1/w2 checkpoint encoding: emit each field ONLY on
+                // change per entity (else ""). Loadout switches are rare;
+                // this keeps the columns near-empty in CSVs. Loader
+                // forward-fills in tick order, so the DB stays dense.
+                // First sight always emits (fill seed).
+                let (wc, w0, w1, w2) = {
+                    let cur_a = self.weapons(e);
+                    let empty = [String::new(), String::new(), String::new()];
+                    let cur_l = loadout.get(idx).unwrap_or(&empty);
+                    let prev = self.wlast.get(idx).cloned().unwrap_or_else(|| {
+                        [String::from("\x00"), String::from("\x00"),
+                         String::from("\x00"), String::from("\x00")]
+                    });
+                    let nxt = [cur_a.clone(), cur_l[0].clone(), cur_l[1].clone(), cur_l[2].clone()];
+                    let mut out = [String::new(), String::new(), String::new(), String::new()];
+                    for i in 0..4 {
+                        if prev[i] != nxt[i] {
+                            out[i] = nxt[i].clone();
                         }
                     }
+                    self.wlast.insert(*idx, nxt);
+                    (out[0].clone(), out[1].clone(), out[2].clone(), out[3].clone())
                 };
                 let line = format!(
-                    "{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{},{}\n",
+                    "{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{},{},{},{},{}\n",
                     u32::from(tick),
                     idx,
                     cls,
@@ -642,6 +660,9 @@ impl MessageHandler for Dump {
                     i64_of(&e.props, "DT_BaseEntity", "m_iTeamNum"),
                     fr,
                     wc,
+                    w0,
+                    w1,
+                    w2,
                 );
                 self.out.write_all(line.as_bytes()).unwrap();
                 self.rows += 1;
@@ -782,7 +803,7 @@ fn main() {
     let demo = Demo::new(&data);
     let stream = demo.get_stream();
     let mut d = Dump { ents: HashMap::new(), out, pout, rows: 0, live: HashMap::new(), last: HashMap::new(), models: HashMap::new(), wlast: HashMap::new() };
-    let header_out = format!("tick,ent,class,ox,oy,oz,vx,vy,vz,eyep,eyey,mspd,flags,health,life,team,fresh,wcls\n");
+    let header_out = format!("tick,ent,class,ox,oy,oz,vx,vy,vz,eyep,eyey,mspd,flags,health,life,team,fresh,wcls,w0,w1,w2\n");
     d.out.write_all(header_out.as_bytes()).unwrap();
     d.pout.write_all(b"tick,ent,class,ox,oy,oz,vx,vy,vz,team,fresh\n").unwrap();
     let parser = DemoParser::new_all_with_analyser(stream, d);

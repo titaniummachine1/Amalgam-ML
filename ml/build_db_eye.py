@@ -24,12 +24,15 @@ con.execute('''CREATE TABLE IF NOT EXISTS ticks(demo SMALLINT, ent SMALLINT, tic
   ox REAL, oy REAL, oz REAL, grounded TINYINT, eyey REAL, cls TINYINT, eyep REAL,
   PRIMARY KEY(demo, ent, tick))''')
 # wcls: active-weapon server class per tick (extractor wcls column, 2026-10-08).
+# w0/w1/w2: owner-inversion loadout slot classes (2026-10-08). All checkpoint-
+# encoded in CSVs (emit on change); loader forward-fills so the DB stays dense.
 # Migrates old DBs in place; absent in old CSVs -> '' (unknown bucket).
-try:
-    con.execute("ALTER TABLE ticks ADD COLUMN wcls TEXT DEFAULT ''")
-    con.commit()
-except Exception:
-    pass
+for _col in ("wcls", "w0", "w1", "w2"):
+    try:
+        con.execute(f"ALTER TABLE ticks ADD COLUMN {_col} TEXT DEFAULT ''")
+        con.commit()
+    except Exception:
+        pass
 
 reg = didreg.load()
 have = {r[0] for r in con.execute('SELECT DISTINCT demo FROM ticks').fetchall()}
@@ -45,26 +48,28 @@ for f in files:
         print('skip (in DB)', name, flush=True)
         continue
     batch = []
-    wfill = {}  # checkpoint fill: wcls emitted only on change; dense in DB
+    wfill = {}  # checkpoint fill: wcls/w0/w1/w2 emitted only on change; dense in DB
     with open(f) as fh:
         for row in csv.DictReader(fh):
             if row['life'] != '0':
                 continue
             try:
                 ent = int(row['ent'])
-                w = (row.get('wcls') or '').strip()[:64]
-                if w:
-                    wfill[ent] = w
+                ws = [(row.get(k) or '').strip()[:64] for k in ('wcls', 'w0', 'w1', 'w2')]
+                prev = wfill.get(ent)
+                if prev is None:
+                    wfill[ent] = ws
                 else:
-                    w = wfill.get(ent, '')
+                    ws = [v if v else prev[i] for i, v in enumerate(ws)]
+                    wfill[ent] = ws
                 batch.append((did, ent, int(row['tick']),
                               float(row['ox']), float(row['oy']), float(row['oz']),
                               1 if (int(row['flags']) & 1) else 0,
                               float(row['eyey']), int(row['class']),
-                              float(row['eyep']), w))
+                              float(row['eyep']), ws[0], ws[1], ws[2], ws[3]))
             except ValueError:
                 continue
-    con.executemany('INSERT OR IGNORE INTO ticks VALUES (?,?,?,?,?,?,?,?,?,?,?)', batch)
+    con.executemany('INSERT OR IGNORE INTO ticks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', batch)
     con.commit()
     print('loaded', name, len(batch), flush=True)
 con.execute('CREATE INDEX IF NOT EXISTS ix_ticks ON ticks(demo, ent, tick)')

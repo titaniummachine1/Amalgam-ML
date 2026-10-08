@@ -73,14 +73,27 @@ MAKE_HOOK(CHLClient_CreateMove, U::Memory.GetVirtual(I::Client, 21), void,
 					continue;
 				const Vec3 vEye = pEnemy->GetEyeAngles();
 				const Vec3 vOrg = pEnemy->m_vecOrigin();
-				// live weapon class for the E-generation weapon dims: resolve the
-				// active-weapon handle to its entity class (same table as training,
-				// ml/build_ds_all.py WCLASS; defid deliberately unused for parity).
+				// live weapon classes for the E-generation weapon dims: active
+				// handle + loadout enumeration, mapped through the shared
+				// table (ml/build_ds_all.py WCLASS; defid deliberately unused
+				// for train/live parity). Unknown -> -1 -> zeros downstream.
 				int iWClsID = -1;
 				if (auto pWep = I::ClientEntityList->GetClientEntityFromHandle(pEnemy->m_hActiveWeapon()))
 					iWClsID = int(pWep->GetClassID());
+				int iWLd[3] = { -1, -1, -1 };
+				for (int s = 0; s < 6; s++)
+				{
+					auto pW = pEnemy->GetWeaponFromSlot(s);
+					if (!pW)
+						continue;
+					int slot = -1; float c = 0.f;
+					CBehaviorPrediction::WeaponFeat(int(pW->GetClassID()), &slot, &c);
+					if (slot >= 0 && slot < 3 && iWLd[slot] < 0)
+						iWLd[slot] = int(pW->GetClassID());
+				}
 				F::BehaviorPrediction.PushState(pEnemy->entindex(),
-					vOrg, vEye.y, (pEnemy->m_fFlags() & 1) != 0, pEnemy->m_iClass(), -1, iWClsID);
+					vOrg, vEye.y, (pEnemy->m_fFlags() & 1) != 0, pEnemy->m_iClass(),
+					-1, iWClsID, iWLd[0], iWLd[1], iWLd[2]);
 			}
 		}
 	F::Ticks.Start(pLocal, pCmd);

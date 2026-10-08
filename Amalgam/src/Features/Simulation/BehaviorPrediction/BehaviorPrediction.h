@@ -138,6 +138,7 @@ public:
 		// BehaviorPrediction.cpp WeaponSlotCls() — MUST match ml WCLASS.
 		float m_flWSlot[kRing][3] = {};
 		float m_flWCls[kRing] = {};
+		float m_flWLd[kRing][3] = {}; // loadout slot class ids (/16), zeros = unknown
 		int m_iClass = 0;
 		int m_iWeaponDef = -1; // active weapon itemdef; -1 = unknown (check skipped)
 		int m_iHead = 0;
@@ -164,7 +165,10 @@ public:
 	// internally (loadout change respawns you: same position, new capabilities —
 	// position-only detectors miss it). iWeaponDef = item definition index of the
 	// active weapon, or -1 when unknown (check skipped, teleport/class still apply).
-	void PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass, int iWeaponDef = -1, int iWeaponClsID = -1);
+	void PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass, int iWeaponDef = -1, int iWeaponClsID = -1, int iWLd0ClsID = -1, int iWLd1ClsID = -1, int iWLd2ClsID = -1);
+	// Shared weapon table (contract: ml/build_ds_all.py WCLASS + extractor
+	// WSLOT). Maps a live ETFClassID to (slot, class/16). Unknown -> (-1, 0).
+	static void WeaponFeat(int iClsID, int* pSlot, float* pCls);
 	// Roll out up to iTicks ahead (cap 132). Writes per-step accel (ego hu/s^2)
 	// into pOut, returns steps written. Confidence is 1.0 until the value head
 	// lands (phase 2); gate on policy only until then.
@@ -181,7 +185,7 @@ public:
 private:
 	std::unordered_map<int, TargetState> m_mTargets;
 	bool m_bWeightsReady = false;
-	float m_Wih[3 * 96 * 18] = {};
+	float m_Wih[3 * 96 * 21] = {};
 	float m_Whh[3 * 96 * 96] = {};
 	float m_Bih[3 * 96] = {};
 	float m_Bhh[3 * 96] = {};

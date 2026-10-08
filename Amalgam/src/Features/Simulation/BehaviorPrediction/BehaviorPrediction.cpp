@@ -29,30 +29,13 @@ namespace
 	constexpr int kRing = CBehaviorPrediction::kRing;
 	constexpr int kHid = CBehaviorPrediction::kHid;
 	constexpr int kMaxRoll = 132;
-	constexpr int kFeat = 18;     // 5 base + 9 class one-hot + 3 weapon slot + 1 weapon class (E generation)
+	constexpr int kFeat = 21;     // 5 base + 9 class one-hot + 3 active slot + 1 active class + 3 loadout (E)
 	// MUST match ml/build_ds_all.py WCLASS + WCLS_SCALE exactly.
 	// iWeaponClsID is ETFClassID (live entity class); training saw server
 	// class NAMES mapped through the same table. defid deliberately unused:
 	// unobservable in training, so parity forbids it live (MG vs stock share
 	// CTFShovel: accepted blur on both sides).
 	constexpr float kWClsScale = 16.f;
-	inline void WeaponSlotCls(int iClsID, int* pSlot, float* pCls)
-	{
-		*pSlot = -1; *pCls = 0.f;
-		switch (iClsID)
-		{
-		case int(ETFClassID::CTFRocketLauncher): *pSlot = 0; *pCls = 1.f / kWClsScale; break;
-		case int(ETFClassID::CTFRocketLauncher_DirectHit): *pSlot = 0; *pCls = 2.f / kWClsScale; break;
-		case int(ETFClassID::CTFRocketLauncher_AirStrike): *pSlot = 0; *pCls = 3.f / kWClsScale; break;
-		case int(ETFClassID::CTFParticleCannon): *pSlot = 0; *pCls = 4.f / kWClsScale; break;
-		case int(ETFClassID::CTFShotgun_Soldier): *pSlot = 1; *pCls = 5.f / kWClsScale; break;
-		case int(ETFClassID::CTFBuffItem): *pSlot = 1; *pCls = 6.f / kWClsScale; break;
-		case int(ETFClassID::CTFShovel): *pSlot = 2; *pCls = 7.f / kWClsScale; break;
-		case int(ETFClassID::CTFKatana): *pSlot = 2; *pCls = 8.f / kWClsScale; break;
-		case int(ETFClassID::CTFSword): *pSlot = 2; *pCls = 9.f / kWClsScale; break;
-		default: break; // unknown weapon: zeros (pre-weapon behavior)
-		}
-	}
 	constexpr float kTeleportHu = 300.f; // step larger than this = spawn/teleport, history reset
 	constexpr float kMoveHu = 0.5f;      // step larger than this = player is walking
 	constexpr int kEngCap = 600;         // LTM engagement cap ticks (mirrors training)
@@ -87,8 +70,29 @@ namespace
 	}
 } // namespace (TargetState defined in header)
 
-void CBehaviorPrediction::Reset(int iEntIndex)
+// Shared weapon table (contract: ml/build_ds_all.py WCLASS + extractor WSLOT).
+// MUST match exactly: training mapped server class NAMES through the same
+// (slot, id). defid deliberately unused (unobservable in STV training, so
+// parity forbids it live; MG vs stock share CTFShovel: accepted blur).
+void CBehaviorPrediction::WeaponFeat(int iClsID, int* pSlot, float* pCls)
 {
+	*pSlot = -1; *pCls = 0.f;
+	switch (iClsID)
+	{
+	case int(ETFClassID::CTFRocketLauncher): *pSlot = 0; *pCls = 1.f / 16.f; break;
+	case int(ETFClassID::CTFRocketLauncher_DirectHit): *pSlot = 0; *pCls = 2.f / 16.f; break;
+	case int(ETFClassID::CTFRocketLauncher_AirStrike): *pSlot = 0; *pCls = 3.f / 16.f; break;
+	case int(ETFClassID::CTFParticleCannon): *pSlot = 0; *pCls = 4.f / 16.f; break;
+	case int(ETFClassID::CTFShotgun_Soldier): *pSlot = 1; *pCls = 5.f / 16.f; break;
+	case int(ETFClassID::CTFBuffItem): *pSlot = 1; *pCls = 6.f / 16.f; break;
+	case int(ETFClassID::CTFShovel): *pSlot = 2; *pCls = 7.f / 16.f; break;
+	case int(ETFClassID::CTFKatana): *pSlot = 2; *pCls = 8.f / 16.f; break;
+	case int(ETFClassID::CTFSword): *pSlot = 2; *pCls = 9.f / 16.f; break;
+	default: break; // unknown weapon: zeros (pre-weapon behavior)
+	}
+}
+
+void CBehaviorPrediction::Reset(int iEntIndex){
 	if (iEntIndex < 0)
 	{
 		m_mTargets.clear();
@@ -115,7 +119,7 @@ void CBehaviorPrediction::EnsureWeights()
 	m_bWeightsReady = true;
 }
 
-void CBehaviorPrediction::PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass, int iWeaponDef, int iWeaponClsID)
+void CBehaviorPrediction::PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass, int iWeaponDef, int iWeaponClsID, int iWLd0ClsID, int iWLd1ClsID, int iWLd2ClsID)
 {
 	auto& st = m_mTargets[iEntIndex]; // default-constructs on first sight
 	bool bReset = (st.m_iCount > 0) && (st.m_iClass != iClass);
@@ -157,11 +161,20 @@ void CBehaviorPrediction::PushState(int iEntIndex, const Vec3& vOrigin, float fl
 	st.m_flGrounded[w] = bGrounded ? 1.f : 0.f;
 	{
 		int iSlot = -1; float flCls = 0.f;
-		WeaponSlotCls(iWeaponClsID, &iSlot, &flCls);
+		WeaponFeat(iWeaponClsID, &iSlot, &flCls);
 		st.m_flWSlot[w][0] = (iSlot == 0) ? 1.f : 0.f;
 		st.m_flWSlot[w][1] = (iSlot == 1) ? 1.f : 0.f;
 		st.m_flWSlot[w][2] = (iSlot == 2) ? 1.f : 0.f;
 		st.m_flWCls[w] = flCls;
+		// loadout context: per-slot class ids (table-mapped; unknown -> 0).
+		// Slot is implied by position (w0/w1/w2); the table re-validates.
+		int iLd[3] = { iWLd0ClsID, iWLd1ClsID, iWLd2ClsID };
+		for (int k = 0; k < 3; k++)
+		{
+			int s = -1; float c = 0.f;
+			WeaponFeat(iLd[k], &s, &c);
+			st.m_flWLd[w][k] = (s == k) ? c : 0.f;
+		}
 	}
 	st.m_iHead++;
 	if (st.m_iCount < kRing)
@@ -314,7 +327,7 @@ static int BuildWarmup(const CBehaviorPrediction::TargetState& st, float flMaxV,
 	const int n = kWarmup;
 	// gather tail in order (oldest..newest), index 0 = oldest
 	float ox[kWarmup], oy[kWarmup], eye[kWarmup], gr[kWarmup];
-	float wslot[kWarmup][3], wcls[kWarmup];
+	float wslot[kWarmup][3], wcls[kWarmup], wld[kWarmup][3];
 	for (int i = 0; i < n; i++)
 	{
 		const int idx = (st.m_iHead - n + i) % kRing;
@@ -327,6 +340,9 @@ static int BuildWarmup(const CBehaviorPrediction::TargetState& st, float flMaxV,
 		wslot[i][1] = st.m_flWSlot[ii][1];
 		wslot[i][2] = st.m_flWSlot[ii][2];
 		wcls[i] = st.m_flWCls[ii];
+		wld[i][0] = st.m_flWLd[ii][0];
+		wld[i][1] = st.m_flWLd[ii][1];
+		wld[i][2] = st.m_flWLd[ii][2];
 	}
 	// backward-diff velocity (hu/s), mirroring training (demo networked vel was stale)
 	float vx[kWarmup], vy[kWarmup];
@@ -369,12 +385,16 @@ static int BuildWarmup(const CBehaviorPrediction::TargetState& st, float flMaxV,
 		ouFeat[i][4] = dy;
 		for (int k = 0; k < 9; k++)
 			ouFeat[i][5 + k] = (k == st.m_iClass - 1) ? 1.f : 0.f;
-		// weapon dims (E generation): slot one-hot + class scalar, per-tick
-		// history exactly as training saw them (zeros = unknown).
+		// weapon dims (E generation): active slot one-hot + active class
+		// scalar + loadout slot class scalars, per-tick history exactly as
+		// training saw them (zeros = unknown).
 		ouFeat[i][14] = wslot[i][0];
 		ouFeat[i][15] = wslot[i][1];
 		ouFeat[i][16] = wslot[i][2];
 		ouFeat[i][17] = wcls[i];
+		ouFeat[i][18] = wld[i][0];
+		ouFeat[i][19] = wld[i][1];
+		ouFeat[i][20] = wld[i][2];
 	}
 	return n;
 }
@@ -433,6 +453,7 @@ int CBehaviorPrediction::Predict(int iEntIndex, int iTicks, BehaviorPrediction_t
 	// locomotion, not loadout switches).
 	float wslT[3] = { feat[n - 1][14], feat[n - 1][15], feat[n - 1][16] };
 	const float wclT = feat[n - 1][17];
+	float wldT[3] = { feat[n - 1][18], feat[n - 1][19], feat[n - 1][20] };
 	// Air-coast blend (ml/eval_air_slice.py verdict: ramp [20,33] gated on
 	// airborne@T). Policy owns 7/13/20 everywhere; coast wins 33/66 on air
 	// (landing discontinuity). Blend per-step ego positions toward the
@@ -510,7 +531,7 @@ int CBehaviorPrediction::Predict(int iEntIndex, int iTicks, BehaviorPrediction_t
 		const float sp = sqrtf(v[0] * v[0] + v[1] * v[1]) / flMaxV;
 		float xin[kFeat] = { v[0] / flMaxV, v[1] / flMaxV, sp, grLast, 0.f,
 			0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f,
-			wslT[0], wslT[1], wslT[2], wclT };
+			wslT[0], wslT[1], wslT[2], wclT, wldT[0], wldT[1], wldT[2] };
 		for (int k = 0; k < 9; k++)
 			xin[5 + k] = (k == st.m_iClass - 1) ? 1.f : 0.f;
 		float hn2[kHid];
