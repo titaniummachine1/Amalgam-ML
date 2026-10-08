@@ -106,6 +106,8 @@ def log(rec):
 
 
 def load(tag):
+    # MEMORY-CAPPED: X18 (7GB) and WLD stay on disk as mmap; only per-batch
+    # slices enter RAM. Returns memmaps + kept positions, NOT copies.
     d = np.load(os.path.join(D, tag + SUF + '.npz'), mmap_mode='r')
     kk = np.load(os.path.join(D, tag + SUF + 'k.npz'))['K']
     dn = np.load(os.path.join(D, tag + SUF + '_dense66.npz'))
@@ -115,10 +117,13 @@ def load(tag):
     # NOTE: no row dropping for force ticks (momentum training: history always
     # moves forward per-player, chronological). Force supervision mask applied
     # in loss via Dforce (rows kept, force ticks zero-weighted).
-    Xs = np.array(d['X'])[good]
+    Xm = d['X']  # mmap (N,66,18): [14 base + wslot(3) + wcls(1)]
+    Wm = np.load(os.path.join(D, tag + 'E_wld.npz'), mmap_mode='r')['WLD']  # mmap (N,66,3) uint8
+    assert Xm.shape[0] == Wm.shape[0] == kk.shape[0], (Xm.shape, Wm.shape, kk.shape)
+    pos = np.where(good)[0]
     sidx = np.where(sol)[0]
     gpos = np.where(good[sidx])[0]
-    Hd, Vd = dn['Hd'][gpos], dn['Vd'][gpos]
+    Hd, Vd = np.array(dn['Hd'][gpos]), np.array(dn['Vd'][gpos])
     # per-row force mask aligned to kept rows (full-key file -> subset)
     Fm = None
     fp = os.path.join(D, tag + 'Dforce.npz')
@@ -130,14 +135,22 @@ def load(tag):
         # good is over SUF keys (=Bk keys), so direct index works.
         Fm = Fall[np.where(good)[0]]
         print(tag, 'force-mask loaded, masked tick frac=%.4f' % float((~Fm).mean() if Fm.size else 0), flush=True)
-    return Xs, Hd, Vd, Fm
+    return Xm, Wm, pos, Hd, Vd, Fm
 
 
-Xtr, Htr, Vtr, Ftr = load('train')
-Xev, Hev, Vev, Fev = load('eval')
-gr_tr = Xtr[:, -1, 3]
+def batch_xb(Xm, Wm, pos, idx):
+    # assemble 21-dim batch in RAM only: [X18 | WLD/16]
+    ii = pos[idx]
+    xb18 = torch.from_numpy(np.array(Xm[ii]))
+    wld = torch.from_numpy(np.array(Wm[ii])).float() / 16.0
+    return torch.cat([xb18, wld], dim=-1)
+
+
+Xtrm, Wtrm, Ptr, Htr, Vtr, Ftr = load('train')
+Xevm, Wevm, Pev, Hev, Vev, Fev = load('eval')
+gr_tr = np.array(Xtrm[Ptr, -1, 3])
 w_tr = 1.0 + AIR_W * (1.0 - (gr_tr > 0.5).astype(np.float32))
-print('train', Xtr.shape, 'eval', Xev.shape, 'AIR_W=%.1f airfrac=%.3f' % (
+print('train', (len(Ptr), 66, 21), 'eval', (len(Pev), 66, 21), 'AIR_W=%.1f airfrac=%.3f' % (
     AIR_W, (gr_tr < 0.5).mean()), flush=True)
 net = Net()
 def load_warm_18(net, ckpt):
@@ -157,18 +170,27 @@ def load_warm_18(net, ckpt):
 net = load_warm_18(net, WARM)
 opt = torch.optim.Adam(net.parameters(), lr=5e-5)
 B = 128
-N = len(Xtr)
+N = len(Ptr)
 best = 1e18
 OUT = os.path.join(D, 'gru_soldier_denseE.pt')
+start_ep = 0
+if os.environ.get('RESUME', '0') == '1' and os.path.exists(OUT):
+    net.load_state_dict(torch.load(OUT, map_location='cpu'))
+    try:
+        best = float(json.load(open(PROG))['best'])
+    except Exception:
+        pass
+    start_ep = 1
+    print(f'resumed from {OUT} best={best}', flush=True)
 t_all = time.time()
-for ep in range(EPOCHS):
+for ep in range(start_ep, EPOCHS):
     net.train()
     perm = np.random.permutation(N)
     bl = []
     t0 = time.time()
     for i in range(0, N, B):
         idx = perm[i:i + B]
-        xb = torch.from_numpy(np.array(Xtr[idx]))
+        xb = batch_xb(Xtrm, Wtrm, Ptr, idx)
         opt.zero_grad()
         loss = dense_loss(net, xb, Htr[idx], Vtr[idx], w_tr[idx],
                           Ftr[idx] if Ftr is not None else None)
@@ -176,11 +198,16 @@ for ep in range(EPOCHS):
         torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
         opt.step()
         bl.append(loss.item())
+        if (i // B) % 500 == 0:
+            dt = time.time() - t0
+            done_frac = (i + B) / N
+            print(f'ep{ep} batch {i // B}/{(N + B - 1) // B} loss={bl[-1]:.2f} '
+                  f'{dt:.0f}s elapsed, ETA ep ~{dt / max(done_frac, 1e-6):.0f}s', flush=True)
     net.eval()
     with torch.no_grad():
         el, ew = [], []
-        for i in range(0, len(Xev), 512):
-            xb = torch.from_numpy(np.array(Xev[i:i + 512]))
+        for i in range(0, len(Pev), 512):
+            xb = batch_xb(Xevm, Wevm, Pev, np.arange(i, min(i + 512, len(Pev))))
             el.append(dense_loss(net, xb, Hev[i:i + 512], Vev[i:i + 512], None,
                                 Fev[i:i + 512] if Fev is not None else None).item())
             ew.append(len(xb))
