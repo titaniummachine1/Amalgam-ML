@@ -18,6 +18,7 @@ void CMisc::RunPre(CTFPlayer* pLocal, CUserCmd* pCmd)
 		|| pLocal->IsTaunting() || pLocal->InCond(TF_COND_SHIELD_CHARGE))
 		return;
 
+	AirDuck(pLocal, pCmd);
 	AutoJump(pLocal, pCmd);
 	EdgeJump(pLocal, pCmd);
 	if (pLocal->InCond(TF_COND_HALLOWEEN_KART))
@@ -176,6 +177,19 @@ void CMisc::AutoStrafe(CTFPlayer* pLocal, CUserCmd* pCmd)
 		pCmd->sidemove = flSinRot * flForward + flCosRot * flSide;
 	}
 	}
+}
+
+void CMisc::AirDuck(CTFPlayer* pLocal, CUserCmd* pCmd)
+{
+	if (!Vars::Misc::Movement::AirDuck.Value)
+		return;
+	// single purpose: tuck while ascending. Runs first so every other duck
+	// owner (jumpbug release, RJ sequencer, ledge-grab unduck) gets final say.
+	// Falling is never touched.
+	if (pLocal->m_hGroundEntity() || F::AutoRocketJump.IsRunning())
+		return;
+	if (pLocal->m_vecVelocity().z > 0.f)
+		pCmd->buttons |= IN_DUCK;
 }
 
 void CMisc::MovementLock(CTFPlayer* pLocal, CUserCmd* pCmd)

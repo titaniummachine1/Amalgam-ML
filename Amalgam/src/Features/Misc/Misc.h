@@ -9,6 +9,7 @@ private:
 	void AutoFaNJump(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void AutoRevJump(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void AutoStrafe(CTFPlayer* pLocal, CUserCmd* pCmd);
+	void AirDuck(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void MovementLock(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void BreakJump(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void AntiAFK(CTFPlayer* pLocal, CUserCmd* pCmd);

@@ -221,8 +221,8 @@ void CSmartJump::RunSmart(CTFPlayer* pLocal, CUserCmd* pCmd)
 
 void CSmartJump::RunAir(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
-	if (Vars::Misc::Movement::SmartJump.Value == Vars::Misc::Movement::SmartJumpEnum::Off
-		|| !Vars::Misc::Movement::AirDuck.Value)
+	// Ledge grab only; the tuck lives in CMisc::AirDuck (runs earlier).
+	if (Vars::Misc::Movement::SmartJump.Value == Vars::Misc::Movement::SmartJumpEnum::Off)
 	{
 		m_bGrabArmed = false;
 		return;
@@ -234,28 +234,21 @@ void CSmartJump::RunAir(CTFPlayer* pLocal, CUserCmd* pCmd)
 		return;
 	}
 
-	const float flVZ = pLocal->m_vecVelocity().z;
-	if (flVZ > 0.f)
+	// ascending past the recorded obstacle top with a confirmed surface
+	// below? release duck: the unduck stands you onto it instead of falling
+	// back. evaluated ascending-only so jumpbug descents are never stripped.
+	if (m_bGrabArmed && pLocal->m_vecVelocity().z > 0.f && pLocal->m_vecOrigin().z > m_flGrabTop)
 	{
-		// ascending: tuck so the hull clears lips. falling is left alone
-		// (jumpbug unduck timing, fast-fall edgebugs stay yours).
-		pCmd->buttons |= IN_DUCK;
-
-		// ledge grab: past the obstacle top with a confirmed surface below?
-		// releasing duck stands you onto it instead of falling back down.
-		if (m_bGrabArmed && pLocal->m_vecOrigin().z > m_flGrabTop)
+		const Vec3 vPos = pLocal->m_vecOrigin();
+		CGameTrace trace = {};
+		CTraceFilterWorldAndPropsOnly filter = {};
+		filter.pSkip = pLocal;
+		SDK::TraceHull(Vec3(vPos.x, vPos.y, m_flGrabTop + 1), Vec3(vPos.x, vPos.y, m_flGrabTop - 10),
+			pLocal->m_vecMins(), pLocal->m_vecMaxs(), pLocal->SolidMask(), &filter, &trace);
+		if (trace.DidHit() && !trace.startsolid)
 		{
-			const Vec3 vPos = pLocal->m_vecOrigin();
-			CGameTrace trace = {};
-			CTraceFilterWorldAndPropsOnly filter = {};
-			filter.pSkip = pLocal;
-			SDK::TraceHull(Vec3(vPos.x, vPos.y, m_flGrabTop + 1), Vec3(vPos.x, vPos.y, m_flGrabTop - 10),
-				pLocal->m_vecMins(), pLocal->m_vecMaxs(), pLocal->SolidMask(), &filter, &trace);
-			if (trace.DidHit() && !trace.startsolid)
-			{
-				pCmd->buttons &= ~IN_DUCK;
-				m_bGrabArmed = false;
-			}
+			pCmd->buttons &= ~IN_DUCK;
+			m_bGrabArmed = false;
 		}
 	}
 	else if (pLocal->m_vecOrigin().z < m_flGrabTop - 100.f)

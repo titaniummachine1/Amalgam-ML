@@ -34,9 +34,11 @@ private:
 public:
 	void RunAuto(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void RunSmart(CTFPlayer* pLocal, CUserCmd* pCmd);
-	// Airborne companion: tucks (duck) while ascending so the hull clears
-	// lips, releases on descent or on a confirmed grab surface. Never
-	// touches duck while the rocket-jump sequencer runs.
+	// Airborne companion to the jump modes: ledge grab only (the tuck itself
+	// lives in CMisc::AirDuck, which runs earlier). Ascending past the
+	// recorded obstacle top with a confirmed surface below releases duck,
+	// standing you onto the surface instead of falling back down.
+	// Never touches duck while the rocket-jump sequencer runs.
 	void RunAir(CTFPlayer* pLocal, CUserCmd* pCmd);
 };
 
