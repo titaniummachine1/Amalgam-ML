@@ -1,5 +1,5 @@
 #include "BehaviorPrediction.h"
-#include "weights_soldier_denseC.h"
+#include "weights_soldier_denseE.h"
 
 #include <cmath>
 #include <cstring>

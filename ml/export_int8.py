@@ -69,7 +69,7 @@ def main():
     for n in names:
         q, s = blobs[n]
         var = n.replace('.', '_')
-        L.append(f'constexpr float kScale_{var} = {s!r}f;')
+        L.append(f'constexpr float kScale_{var} = {float(s)!r}f;')
         flat = q.flatten()
         L.append(f'const int8_t kW_{var}[{flat.size}] = {{' +
                  ','.join(str(int(v)) for v in flat) + '};')
