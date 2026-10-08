@@ -206,6 +206,12 @@ void CMenu::MenuAimbot(int iTab)
 					FToggle(Vars::CritHack::AvoidRandomCrits, FToggleEnum::Right);
 					FToggle(Vars::CritHack::AlwaysMeleeCrit, FToggleEnum::Left);
 					FToggle(Vars::CritHack::CritEffects, FToggleEnum::Right);
+					FToggle(Vars::Aimbot::Melee::CritRefill, FToggleEnum::Left);
+					PushTransparent(!Vars::Aimbot::Melee::CritRefill.Value);
+					{
+						FSlider(Vars::Aimbot::Melee::CritRefillAmount, FSliderEnum::Right);
+					}
+					PopTransparent();
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{
@@ -409,6 +415,7 @@ void CMenu::MenuAimbot(int iTab)
 					FToggle(Vars::Aimbot::Melee::IgnoreRazorback, FToggleEnum::Right);
 					FToggle(Vars::Aimbot::Melee::SwingPrediction, FToggleEnum::Left);
 					FToggle(Vars::Aimbot::Melee::WhipTeam, FToggleEnum::Right);
+					FToggle(Vars::Aimbot::Melee::ChargeReach, FToggleEnum::Left);
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{

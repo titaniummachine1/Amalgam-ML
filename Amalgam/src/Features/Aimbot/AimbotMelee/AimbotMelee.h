@@ -25,6 +25,11 @@ private:
 	int m_iSimulatedTicks = 0;
 	int m_iDoubletapTicks = 0;
 
+	enum class ChargeState { Idle, Tracking, Charge };
+	ChargeState m_eChargeState = ChargeState::Idle;
+	int m_iChargeTicks = 0;
+	int m_iChargeTarget = -1;
+
 	std::unordered_map<int, std::deque<TickRecord>> m_mRecordMap;
 	std::unordered_map<int, std::vector<Vec3>> m_mPaths;
 
