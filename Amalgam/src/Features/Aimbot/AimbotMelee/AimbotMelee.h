@@ -35,6 +35,9 @@ private:
 
 public:
 	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
+	// Charge-reach tracking/charge in flight: DT/warp must stand down or the
+	// IN_ATTACK2 tick executes inside compressed shift-time (see Ticks).
+	bool IsChargeBusy() const { return m_eChargeState != ChargeState::Idle; }
 };
 
 ADD_FEATURE(CAimbotMelee, AimbotMelee);

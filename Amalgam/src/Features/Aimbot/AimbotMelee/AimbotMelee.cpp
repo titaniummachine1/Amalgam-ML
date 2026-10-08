@@ -730,7 +730,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		{
 			if (m_bShouldSwing)
 				pCmd->buttons |= IN_ATTACK;
-			if (m_iDoubletapTicks)
+			if (m_iDoubletapTicks && !IsChargeBusy())
 				F::Ticks.m_bDoubletap = true;
 		}
 
