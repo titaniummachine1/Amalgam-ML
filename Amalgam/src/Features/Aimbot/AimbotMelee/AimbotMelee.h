@@ -25,10 +25,13 @@ private:
 	int m_iSimulatedTicks = 0;
 	int m_iDoubletapTicks = 0;
 
-	enum class ChargeState { Idle, Tracking, Charge };
+	enum class ChargeState { Idle, Tracking, Aim, Charge };
 	ChargeState m_eChargeState = ChargeState::Idle;
 	int m_iChargeTicks = 0;
 	int m_iChargeTarget = -1;
+	// Aim angles captured at swing press (arm). Reapplied on the aim-snap
+	// tick so the smack resolves with the swing's aim (qawe-faithful).
+	Vec3 m_vChargeAim = {};
 	// Coverage hold: tickcount when holding the swing for bank completion
 	// (0 = not holding). Instant damage needs bank >= smack delay.
 	int m_iSwingHoldTick = 0;
