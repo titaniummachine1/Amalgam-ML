@@ -23,7 +23,7 @@ static const int TRICKSTAB_LUT[3][3][3] = {
 	{ {4,1,2}, {4,0,2}, {4,0,3} },
 };
 
-bool CAutoTrickstab::SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, DirResult_t& tOut)
+bool CAutoTrickstab::SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, const Vec3& vTargetPos, float flHitbox, DirResult_t& tOut)
 {
 	tOut = DirResult_t();
 	if (!pLocal || iTicks <= 0)
@@ -46,6 +46,15 @@ bool CAutoTrickstab::SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, DirRe
 		if (tStorage.m_bFailed)
 			break;
 		F::MoveSim.RunTick(tStorage);
+		// Player contact (Lua-faithful break): stop AT the opponent, never
+		// through. 2D only: head-standing stays legal. Combined radii is the
+		// padding so warp skirts without touching (this is what the LUT
+		// padding is FOR: 1u per side, 2u total). Engine PM collides too;
+		// this is the deterministic backstop either way.
+		Vec3 vD = mv.m_vecAbsOrigin - vTargetPos;
+		vD.z = 0.f;
+		if (vD.Length() < flHitbox)
+			break;
 	}
 	tOut.vEnd = mv.m_vecAbsOrigin;
 	tOut.vPath = tStorage.m_vPath;
@@ -150,7 +159,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 			break;
 		const Vec3 vPoint = vLead + vCorners[iCorner];
 		const float flYaw = atan2f(vPoint.y - vMy.y, vPoint.x - vMy.x) * 57.29578f;
-		if (!SimDir(pLocal, flYaw, iTicks, aRes[iDirs]))
+		if (!SimDir(pLocal, flYaw, iTicks, pTarget->m_vecOrigin(), flHitbox, aRes[iDirs]))
 			continue;
 		aRes[iDirs].iHitTick = ScorePath(pLocal, pWeapon, pTarget, vTargetCenter, flTargetYaw, aRes[iDirs].vPath, aRes[iDirs].vHitPos);
 		aRes[iDirs].bHittable = aRes[iDirs].iHitTick >= 0;

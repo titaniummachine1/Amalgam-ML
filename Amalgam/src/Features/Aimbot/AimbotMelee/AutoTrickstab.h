@@ -29,8 +29,10 @@ private:
 	};
 
 	// Engine sim along a world yaw for iTicks. Full restore on ALL paths.
-	// Returns false when the sim failed/stalled (direction unusable for warp).
-	bool SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, DirResult_t& tOut);
+	// Stops AT live opponents (combined-radii contact break, Lua-faithful:
+	// warp skirts to behind, never through). Returns false when the sim
+	// failed/stalled elsewhere (direction unusable for warp).
+	bool SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, const Vec3& vTargetPos, float flHitbox, DirResult_t& tOut);
 	// Earliest hittable path index (behind-dot + swing range + visibility per
 	// point, CanBackstab core shape). Returns -1 when no point hits.
 	int ScorePath(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CTFPlayer* pTarget, const Vec3& vTargetCenter, float flTargetYaw, const std::vector<Vec3>& vPath, Vec3& vHitPosOut);
