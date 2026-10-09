@@ -170,7 +170,7 @@ bool CAutoTrickstab::StabAt(const Vec3& vSimEye, const Vec3& vFoePos, const Vec3
 	return true;
 }
 
-float CAutoTrickstab::ScorePath(CTFPlayer* pLocal, CTFPlayer* pTarget, const std::vector<Vec3>& vPath, const std::vector<Vec3>& vFoePath, const Vec3& vLeadEye, float flFoeYaw, float flOwnerYaw, float flRange, const Vec3& vSwingMins, const Vec3& vSwingMaxs, Vec3& vHitPosOut, Vec3& vHitEyeOut, Vec3& vHitFoeOut, int& iHitTickOut, int& iHitCountOut)
+float CAutoTrickstab::ScorePath(CTFPlayer* pLocal, CTFPlayer* pTarget, const std::vector<Vec3>& vPath, const std::vector<Vec3>& vFoePath, const Vec3& vLeadEye, float flFoeYaw, float flOwnerYaw, float flRange, const Vec3& vSwingMins, const Vec3& vSwingMaxs, Vec3& vHitPosOut, Vec3& vHitEyeOut, Vec3& vHitFoeOut, int& iHitTickOut, int& iHitCountOut, std::vector<char>& vHitsOut)
 {
 	float flBest = -1.f;
 	vHitPosOut = {};
@@ -178,6 +178,7 @@ float CAutoTrickstab::ScorePath(CTFPlayer* pLocal, CTFPlayer* pTarget, const std
 	vHitFoeOut = {};
 	iHitTickOut = -1;
 	iHitCountOut = 0;
+	vHitsOut.assign(vPath.size(), 0);
 	const Vec3 vLocalEye = pLocal->m_vecViewOffset();
 	const Vec3 vFoeEyeOff = pTarget->m_vecViewOffset();
 	for (size_t k = 0; k < vPath.size(); k++)
@@ -188,6 +189,7 @@ float CAutoTrickstab::ScorePath(CTFPlayer* pLocal, CTFPlayer* pTarget, const std
 		const Vec3 vFoeEye = vFoe + vFoeEyeOff;
 		if (!StabAt(vEye, vFoe, vFoeEye, flFoeYaw, flOwnerYaw, flRange, vSwingMins, vSwingMaxs, pLocal, pTarget))
 			continue;
+		vHitsOut[k] = 1;
 		iHitCountOut++;
 		// Lua ranking: eye-anchored yaw + feet distance, tie -> earlier.
 		// (Direction fixed: sim -> enemy vs facing, ~0 behind. The old code
@@ -302,6 +304,46 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 	const Vec3 vLeadEye = vLead + pTarget->m_vecViewOffset();
 	const float flFoeYaw = H::Entities.GetEyeAngles(pTarget->entindex()).y;
 	const float flOwnerYaw = pCmd->viewangles.y;
+	// Commit lifecycle + bonus run WITHOUT bank (bonus ticks are live-sent).
+	// Everything below this point is sim-bound: bank 0 -> fully idle.
+	if (m_bCommitting)
+	{
+		m_iCommitAge++;
+		if (!F::Ticks.m_bWarp || m_iCommitAge > 90)
+		{
+			m_bCommitting = false;
+			m_iCommitLeft = 0;
+			m_iBonusLeft = 3;
+		}
+		else if (m_iCommitLeft > 0)
+			m_iCommitLeft--;
+	}
+	if (!m_bCommitting && m_iBonusLeft > 0)
+	{
+		const float flBackRadB = (flFoeYaw + 180.f) * TRICKSTAB_DEG2RAD;
+		const float flHxb = pLocal->m_vecMaxs().x + pTarget->m_vecMaxs().x;
+		Vec3 vBack = (vLead + Vec3(cosf(flBackRadB), sinf(flBackRadB), 0.f) * flHxb) - vMyPos;
+		vBack.z = 0.f;
+		if (vBack.Length2D() >= 1.f)
+		{
+			vBack = vBack * (1.f / vBack.Length2D());
+			PlantMoves(pLocal, pCmd, vBack);
+		}
+		m_iBonusLeft--;
+	}
+	// Sim horizon is ALWAYS the bank (no planning floor): bank 0 -> no sims,
+	// no viz, no assist, no claim. Lua-faithful (0 ticks = empty paths).
+	if (iBank <= 0)
+		return;
+	const int iTicks = iBank;
+	// Executable-range gate: bank carry + stab range + bonus reach. Beyond
+	// this the warp physically cannot arrive — drawing there is lying.
+	{
+		const float flStep = SDK::MaxSpeed(pLocal) * I::GlobalVars->interval_per_tick;
+		const float flMaxReach = iBank * flStep + flRange + 3.f * flStep;
+		if (flBest > flMaxReach * flMaxReach)
+			return;
+	}
 	// Minkowski corners: expanded half-extents + 1u graze padding. Standing:
 	// +/-(24+24+1) = +/-49. Exact, duck-aware, rotation-independent.
 	const Vec3 vOMin = pLocal->m_vecMins(), vOMax = pLocal->m_vecMaxs();
@@ -356,9 +398,6 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 	const float flBackYaw = flFoeYaw + 180.f;
 	const bool bWithinBackAngle = fabsf(TrickstabNorm(TrickstabYaw(vLead, vMyPos) - flBackYaw)) <= 90.f;
 	const bool bStairstab = fabsf(vMyPos.z - vLead.z) >= TRICKSTAB_STAIRSTAB_H;
-	// Horizon: exact bank for the commit length; planning floor so assist
-	// steers while bankless (positioning for the future warp is its job).
-	const int iTicks = std::max(iBank, 8);
 	// Dual prediction: enemy extrapolated once (friction + gravity), reused
 	// by all paths. Exact on flat ground; full enemy MoveSim is the
 	// documented upgrade path if tests show divergence.
@@ -417,7 +456,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 		DirResult_t& r = aRes[iDirs];
 		if (!SimDir(pLocal, flWishYaw, iTicks, vLead, vOMin, vOMax, vTMin, vTMax, r))
 			return -1;
-		r.flScore = ScorePath(pLocal, pTarget, r.vPath, vFoePath, vLeadEye, flFoeYaw, flOwnerYaw, flRange, vSwingMins, vSwingMaxs, r.vHitPos, r.vHitEye, r.vHitFoe, r.iHitTick, r.iHitCount);
+		r.flScore = ScorePath(pLocal, pTarget, r.vPath, vFoePath, vLeadEye, flFoeYaw, flOwnerYaw, flRange, vSwingMins, vSwingMaxs, r.vHitPos, r.vHitEye, r.vHitFoe, r.iHitTick, r.iHitCount, r.vHits);
 		r.bHittable = r.flScore >= 0.f;
 		m_iTotalPoints += r.iHitCount;
 		CGameTrace wallTrace = {};
@@ -499,37 +538,9 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 			F::Ticks.m_iShiftedGoal = std::max(iBank - m_iMinTicks, 0);
 		}
 	}
-	// Commit lifecycle: plant continues via the assist branch above while
-	// the warp is out; release -> 3 live-sent back-aimed bonus ticks (safe
-	// subset; choked-range variant is a tested follow-up, not this pass).
-	if (m_bCommitting)
-	{
-		m_iCommitAge++;
-		if (!F::Ticks.m_bWarp || m_iCommitAge > 90)
-		{
-			m_bCommitting = false;
-			m_iCommitLeft = 0;
-			m_iBonusLeft = 3;
-		}
-		else if (m_iCommitLeft > 0)
-			m_iCommitLeft--;
-	}
-	if (!m_bCommitting && m_iBonusLeft > 0)
-	{
-		const float flBackRad = flBackYaw * TRICKSTAB_DEG2RAD;
-		Vec3 vBack = (vLead + Vec3(cosf(flBackRad), sinf(flBackRad), 0.f) * flHx) - vMyPos;
-		vBack.z = 0.f;
-		if (vBack.Length2D() >= 1.f)
-		{
-			vBack = vBack * (1.f / vBack.Length2D());
-			PlantMoves(pLocal, pCmd, vBack);
-		}
-		m_iBonusLeft--;
-	}
-	// Draw: all valid paths dim, best green (scored) / yellow (fallback),
-	// cyan link while committing. Short expiry, refreshed per tick.
+	// Draw: paths bright enough to read, per-tick dots (green = hittable),
+	// hit marker + feet-level target link (no mid-air diagonals).
 	const float flUntil = I::GlobalVars->curtime + 1.f;
-	const Vec3 vTargetCenter = pTarget->GetCenter();
 	for (int i = 0; i < iDirs; i++)
 	{
 		if (!aRes[i].bValid || (int)aRes[i].vPath.size() < 2)
@@ -537,14 +548,23 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 		const bool bIsBest = (i == iBest);
 		Color_t tCol = bIsBest
 			? (aRes[i].bHittable ? Color_t(0, 255, 0) : Color_t(255, 255, 0))
-			: Color_t(255, 255, 255, 40);
+			: Color_t(255, 255, 255, 110);
 		for (size_t k = 0; k + 1 < aRes[i].vPath.size(); k++)
 			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(aRes[i].vPath[k], aRes[i].vPath[k + 1]), flUntil, tCol, true);
+		// Per-tick dots: green = hittable here, faint red = not. Feet level,
+		// same storage as prediction lines (draw tab shows both together).
+		for (size_t k = 0; k < aRes[i].vPath.size(); k++)
+		{
+			const bool bHit = k < aRes[i].vHits.size() && aRes[i].vHits[k];
+			const Vec3 vDot = aRes[i].vPath[k];
+			const Color_t tDot = bHit ? Color_t(0, 255, 0) : Color_t(255, 60, 60, 70);
+			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vDot, vDot + Vec3(0, 0, bHit ? 6 : 3)), flUntil, tDot, true);
+		}
 		if (bIsBest)
 		{
 			const Vec3 vMark = aRes[i].bHittable ? aRes[i].vHitPos : aRes[i].vEnd;
-			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vMark, vMark + Vec3(0, 0, 5)), flUntil, tCol, true);
-			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vMark, vTargetCenter), flUntil, m_bCommitting ? Color_t(0, 255, 255) : Color_t(255, 255, 0), true);
+			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vMark, vMark + Vec3(0, 0, 8)), flUntil, tCol, true);
+			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vMark, vLead), flUntil, m_bCommitting ? Color_t(0, 255, 255) : Color_t(255, 255, 0), true);
 		}
 	}
 }

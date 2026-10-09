@@ -40,6 +40,7 @@ private:
 		float flScore = -1.f; // path-best weighted score
 		int iHitTick = -1;    // index into vPath of the path-best score
 		int iHitCount = 0;
+		std::vector<char> vHits = {}; // per-tick hit flags (viz dots)
 		Vec3 vHitPos = {};  // feet at the path-best tick
 		Vec3 vHitEye = {};  // eye at the path-best tick
 		Vec3 vHitFoe = {};  // predicted enemy feet at the path-best tick
@@ -54,8 +55,9 @@ private:
 	float Wishdir(const Vec3& vResolved, const Vec3& vMyPos, const Vec3& vLeadPos, const Vec3& vCorner);
 	// Pure per-tick stab test (aimbot-unified gates). No side effects.
 	bool StabAt(const Vec3& vSimEye, const Vec3& vFoePos, const Vec3& vFoeEye, float flFoeYaw, float flOwnerYaw, float flRange, const Vec3& vSwingMins, const Vec3& vSwingMaxs, CTFPlayer* pLocal, CTFPlayer* pTarget);
-	// Weighted Lua ranking for one path. Fills path-best fields.
-	float ScorePath(CTFPlayer* pLocal, CTFPlayer* pTarget, const std::vector<Vec3>& vPath, const std::vector<Vec3>& vFoePath, const Vec3& vLeadEye, float flFoeYaw, float flOwnerYaw, float flRange, const Vec3& vSwingMins, const Vec3& vSwingMaxs, Vec3& vHitPosOut, Vec3& vHitEyeOut, Vec3& vHitFoeOut, int& iHitTickOut, int& iHitCountOut);
+	// Weighted Lua ranking for one path. Fills path-best fields + per-tick
+	// hit flags (for viz dots).
+	float ScorePath(CTFPlayer* pLocal, CTFPlayer* pTarget, const std::vector<Vec3>& vPath, const std::vector<Vec3>& vFoePath, const Vec3& vLeadEye, float flFoeYaw, float flOwnerYaw, float flRange, const Vec3& vSwingMins, const Vec3& vSwingMaxs, Vec3& vHitPosOut, Vec3& vHitEyeOut, Vec3& vHitFoeOut, int& iHitTickOut, int& iHitCountOut, std::vector<char>& vHitsOut);
 	// Plant a world wishdir into cmd without touching view (view-relative
 	// decompose against the final angles). Autostrafe routed when enabled.
 	void PlantMoves(CTFPlayer* pLocal, CUserCmd* pCmd, const Vec3& vWishDir);
