@@ -564,7 +564,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 			m_iCommitLeft = m_iMinTicks;
 			m_iCommitAge = 0;
 			F::Ticks.m_bWarp = true;
-			F::Ticks.m_iShiftedGoal = std::max(iBank - m_iMinTicks, 0);
+			F::Ticks.m_iShiftedGoal = F::Ticks.ReleaseGoal(m_iMinTicks);
 		}
 	}
 	// Draw EVERYTHING the sims produced (toggle in Visuals > Prediction):

@@ -41,6 +41,11 @@ public:
 	int GetShotsWithinPacket(CTFWeaponBase* pWeapon, int iTicks = Vars::Doubletap::TickLimit.Value);
 	int GetMinimumTicksNeeded(CTFWeaponBase* pWeapon);
 
+	// Shared warp-goal arithmetic: goal that releases exactly iTicks.
+	// Both the generic driver and the trickstab claim use it so the two
+	// can never silently drift apart (the old copy-pasted formula did).
+	int ReleaseGoal(int iTicks);
+
 	// Post-warp recharge blackout (trickstab): HoldRecharge starts a hold
 	// at warp release (skipped if damage landed since the claim tick, so a
 	// mid-warp stab resumes recharge instantly); enemy damage/kill clears

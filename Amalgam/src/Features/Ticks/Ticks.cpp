@@ -99,6 +99,11 @@ void CTicks::OnEnemyKill(IGameEvent* pEvent)
 	m_iShiftedTicks = iBank;
 }
 
+int CTicks::ReleaseGoal(int iTicks)
+{
+	return std::max(m_iShiftedTicks - iTicks, 0);
+}
+
 void CTicks::Warp()
 {
 	if (!m_bGoalReached)
@@ -117,7 +122,7 @@ void CTicks::Warp()
 		return;
 
 	m_bWarp = true;
-	m_iShiftedGoal = std::max(m_iShiftedTicks - Vars::Doubletap::WarpRate.Value + 1, 0);
+	m_iShiftedGoal = ReleaseGoal(Vars::Doubletap::WarpRate.Value - 1);
 }
 
 void CTicks::Doubletap(CTFPlayer* pLocal, CUserCmd* pCmd)
