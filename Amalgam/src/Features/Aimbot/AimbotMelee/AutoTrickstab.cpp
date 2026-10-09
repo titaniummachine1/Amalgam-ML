@@ -330,6 +330,9 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 			m_bCommitting = false;
 			m_iCommitLeft = 0;
 			m_iBonusLeft = 3;
+			// Warp executed: blackout recharge until damage/kill confirms
+			// or 13 ticks pass (skipped if damage landed since the claim).
+			F::Ticks.HoldRecharge(13, m_iClaimTick);
 		}
 		else if (m_iCommitLeft > 0)
 			m_iCommitLeft--;
@@ -557,6 +560,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 		{
 			m_bCommitting = true;
 			m_vCommitDir = m_vBestDir;
+			m_iClaimTick = I::GlobalVars->tickcount;
 			m_iCommitLeft = m_iMinTicks;
 			m_iCommitAge = 0;
 			F::Ticks.m_bWarp = true;

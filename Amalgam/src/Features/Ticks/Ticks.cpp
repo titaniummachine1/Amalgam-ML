@@ -19,6 +19,15 @@ void CTicks::Recharge(CTFPlayer* pLocal)
 	if (!m_bGoalReached)
 		return;
 
+	// Post-warp blackout: no recharge of any kind until enemy damage/kill
+	// clears it or 13 ticks pass. Decrements on MoveManage cadence. The
+	// commit itself never reaches here (m_bWarp guard below returns first),
+	// so the hold strictly covers AFTER release.
+	if (m_iPostWarpHold > 0)
+	{
+		m_iPostWarpHold--;
+		return;
+	}
 	bool bPassive = m_bRecharge = false;
 
 	static float flPassiveTime = 0.f;
@@ -41,6 +50,53 @@ void CTicks::Recharge(CTFPlayer* pLocal)
 
 	m_bRecharge = true;
 	m_iShiftedGoal = m_iShiftedTicks + 1;
+}
+
+void CTicks::HoldRecharge(int iTicks, int iSinceTick)
+{
+	// Damage already confirmed since the claim (e.g. stabbed mid-warp):
+	// no blackout needed, recharge resumes immediately.
+	if (m_iLastDamageTick >= iSinceTick)
+		return;
+	m_iPostWarpHold = std::max(m_iPostWarpHold, iTicks);
+}
+
+// Our damage ON an enemy (self-hits, enemy-on-us, teammate business all
+// excluded): the confirm signal for post-warp recharge + damage stamp.
+static bool TrickstabVictimIsFoe(IGameEvent* pEvent)
+{
+	auto pLocal = H::Entities.GetLocal();
+	if (!pLocal || !pEvent)
+		return false;
+	if (I::EngineClient->GetPlayerForUserID(pEvent->GetInt("attacker")) != I::EngineClient->GetLocalPlayer())
+		return false;
+	auto pVictimEnt = I::ClientEntityList->GetClientEntity(I::EngineClient->GetPlayerForUserID(pEvent->GetInt("userid")));
+	auto pVictim = pVictimEnt ? pVictimEnt->As<CTFPlayer>() : nullptr;
+	if (!pVictim || pVictim == pLocal || pVictim->m_iTeamNum() == pLocal->m_iTeamNum())
+		return false;
+	return true;
+}
+
+void CTicks::OnEnemyDamage(IGameEvent* pEvent)
+{
+	if (!TrickstabVictimIsFoe(pEvent))
+		return;
+	m_iLastDamageTick = I::GlobalVars->tickcount;
+	m_iPostWarpHold = 0;
+}
+
+void CTicks::OnEnemyKill(IGameEvent* pEvent)
+{
+	if (!TrickstabVictimIsFoe(pEvent))
+		return;
+	m_iLastDamageTick = I::GlobalVars->tickcount;
+	m_iPostWarpHold = 0;
+	// Kill spike: +4 bank NOW, clamped to max. Moot when already maxed
+	// (auto-recharge maxed included) — the clamp IS the special case, no
+	// separate branch. Goal raised with it so no phantom burst follows.
+	const int iBank = std::min(m_iShiftedTicks + 4, m_iMaxShift);
+	m_iShiftedGoal = std::max(m_iShiftedGoal, iBank);
+	m_iShiftedTicks = iBank;
 }
 
 void CTicks::Warp()

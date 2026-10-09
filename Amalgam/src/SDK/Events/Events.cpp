@@ -9,12 +9,13 @@
 #include "../../Features/PacketManip/AntiAim/AntiAim.h"
 #include "../../Features/Output/Output.h"
 #include "../../Features/Resolver/Resolver.h"
+#include "../../Features/Ticks/Ticks.h"
 #include "../../Features/Visuals/Visuals.h"
 
 bool CEventListener::Initialize()
 {
 	std::vector<const char*> vEvents = { 
-		"client_beginconnect", "client_connected", "client_disconnect", "game_newmap", "teamplay_round_start", "scorestats_accumulated_update", "mvm_reset_stats", "player_connect_client", "player_spawn", "player_changeclass", "player_hurt", "vote_cast", "item_pickup", "revive_player_notify"
+		"client_beginconnect", "client_connected", "client_disconnect", "game_newmap", "teamplay_round_start", "scorestats_accumulated_update", "mvm_reset_stats", "player_connect_client", "player_spawn", "player_changeclass", "player_hurt", "player_death", "vote_cast", "item_pickup", "revive_player_notify"
 	};
 
 	for (auto szEvent : vEvents)
@@ -58,6 +59,12 @@ void CEventListener::FireGameEvent(IGameEvent* pEvent)
 	{
 		F::Resolver.PlayerHurt(pEvent);
 		F::CheatDetection.ReportDamage(pEvent);
+		F::Ticks.OnEnemyDamage(pEvent);
+		return;
+	}
+	case FNV1A::Hash32Const("player_death"):
+	{
+		F::Ticks.OnEnemyKill(pEvent);
 		return;
 	}
 	case FNV1A::Hash32Const("player_spawn"):

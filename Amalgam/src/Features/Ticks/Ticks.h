@@ -41,6 +41,14 @@ public:
 	int GetShotsWithinPacket(CTFWeaponBase* pWeapon, int iTicks = Vars::Doubletap::TickLimit.Value);
 	int GetMinimumTicksNeeded(CTFWeaponBase* pWeapon);
 
+	// Post-warp recharge blackout (trickstab): HoldRecharge starts a hold
+	// at warp release (skipped if damage landed since the claim tick, so a
+	// mid-warp stab resumes recharge instantly); enemy damage/kill clears
+	// it; kills also spike +4 bank clamped to max.
+	void HoldRecharge(int iTicks, int iSinceTick);
+	void OnEnemyDamage(IGameEvent* pEvent);
+	void OnEnemyKill(IGameEvent* pEvent);
+
 	void SaveShootPos(CTFPlayer* pLocal);
 	Vec3 GetShootPos();
 	void SaveShootAngle(CUserCmd* pCmd, bool bSendPacket);
@@ -63,6 +71,8 @@ public:
 	int m_iMaxUsrCmdProcessTicks = 24;
 	int m_iMaxShift = 24;
 	int m_iDeficit = 0;
+	int m_iPostWarpHold = 0;
+	int m_iLastDamageTick = 0;
 };
 
 ADD_FEATURE(CTicks, Ticks);

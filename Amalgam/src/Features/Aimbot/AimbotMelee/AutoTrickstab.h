@@ -75,6 +75,7 @@ public:
 
 private:
 	bool m_bCommitting = false;
+	int m_iClaimTick = 0; // tickcount at claim (damage-since-claim check)
 	Vec3 m_vCommitDir = {}; // frozen at claim: warp steering ignores fresh
 	// selection AND manual input (assist positions, warp executes).
 	int m_iCommitLeft = 0;
