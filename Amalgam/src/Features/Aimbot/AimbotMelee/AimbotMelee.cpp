@@ -806,6 +806,20 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		DrawVisuals(pLocal, pWeapon, pCmd, tTarget, m_mPaths);
 
 		Aim(pCmd, tTarget.m_vAngleTo);
+		// Smack in flight (Silent/Locking): keep the lock written every tick
+		// through the delay, recomputed above (CanHit ran this tick). DT
+		// dumps replay pre-press backlog ticks; if those carry camera angles
+		// the smack resolves unlocked -> systematic miss. Overshoot past the
+		// smack is harmless once every tick is locked. Plain/Smooth/Assistive
+		// keep their visible-aim contracts (camera owned by the user there).
+		if (pWeapon->m_flSmackTime() > 0.f
+			&& (Vars::Aimbot::General::AimType.Value == Vars::Aimbot::General::AimTypeEnum::Silent
+			|| Vars::Aimbot::General::AimType.Value == Vars::Aimbot::General::AimTypeEnum::Locking))
+		{
+			SDK::FixMovement(pCmd, tTarget.m_vAngleTo);
+			pCmd->viewangles = tTarget.m_vAngleTo;
+			G::PSilentAngles = true;
+		}
 		break;
 	}
 }
