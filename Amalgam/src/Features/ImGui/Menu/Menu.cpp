@@ -1,6 +1,7 @@
 #include "Menu.h"
 
 #include "Components.h"
+#include "../../../SDK/VarsMelee.h"
 #include "../Notifications/Notifications.h"
 #include "../../Configs/Configs.h"
 #include "../../Binds/Binds.h"
