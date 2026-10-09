@@ -63,7 +63,7 @@ bool CAutoTrickstab::SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, const
 	return tOut.bValid;
 }
 
-int CAutoTrickstab::ScorePath(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CTFPlayer* pTarget, const Vec3& vTargetCenter, float flTargetYaw, const std::vector<Vec3>& vPath, Vec3& vHitPosOut)
+int CAutoTrickstab::ScorePath(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CTFPlayer* pTarget, const Vec3& vLeadPos, const std::vector<Vec3>& vPath, Vec3& vHitPosOut, int& iHitCountOut)
 {
 	float flRange = SDK::AttribHookValue(pWeapon->GetSwingRange(), "melee_range_multiplier", pWeapon);
 	if (pLocal->m_flModelScale() > 1.0f)
@@ -71,29 +71,48 @@ int CAutoTrickstab::ScorePath(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CTFPlay
 	const float flHull = SDK::AttribHookValue(18, "melee_bounds_multiplier", pWeapon);
 	const Vec3 vSwingMins = { -flHull, -flHull, -flHull };
 	const Vec3 vSwingMaxs = { flHull, flHull, flHull };
-	const float flRad = flTargetYaw * TRICKSTAB_DEG2RAD;
-	const Vec3 vTargetFwd = { cosf(flRad), sinf(flRad), 0.f };
+	// Lead AABB + their eye (their viewpos). Deviations from Lua noted:
+	// MASK_SOLID matches OUR swing detection (theirs SHOT_HULL); live hulls
+	// (duck-aware) for their fixed HULL.
+	const Vec3 vBoxMins = vLeadPos + pTarget->m_vecMins();
+	const Vec3 vBoxMaxs = vLeadPos + pTarget->m_vecMaxs();
+	const Vec3 vEnemyView = vLeadPos + pTarget->m_vecViewOffset();
+	const float flEnemyYaw = H::Entities.GetEyeAngles(pTarget->entindex()).y;
 	CTraceFilterHitscan filter = {};
 	filter.pSkip = pLocal;
+	iHitCountOut = 0;
+	int iFirst = -1;
 	for (size_t k = 0; k < vPath.size(); k++)
 	{
 		const Vec3 vEye = vPath[k] + pLocal->m_vecViewOffset();
-		Vec3 vToT = vTargetCenter - vEye;
-		vToT.z = 0.f;
-		const float flDist = (vTargetCenter - vEye).Length();
-		if (flDist < 0.001f || flDist > flRange)
+		// Closest point on the target AABB to our eye.
+		const Vec3 vClosest = {
+			vEye.x < vBoxMins.x ? vBoxMins.x : (vEye.x > vBoxMaxs.x ? vBoxMaxs.x : vEye.x),
+			vEye.y < vBoxMins.y ? vBoxMins.y : (vEye.y > vBoxMaxs.y ? vBoxMaxs.y : vEye.y),
+			vEye.z < vBoxMins.z ? vBoxMins.z : (vEye.z > vBoxMaxs.z ? vBoxMaxs.z : vEye.z) };
+		// BACKSTAB_RANGE sphere (66, theirs) + our swing range (delivery).
+		const float flDist = (vEye - vClosest).Length();
+		if (flDist > 66.f || flDist > flRange)
 			continue;
-		if ((vToT * (1.f / flDist)).Dot(vTargetFwd) <= 0.f)
-			continue; // not behind
+		// Yaw delta, theirs exact: < BACKSTAB_ANGLE-1 (89) = behind.
+		const float flSpyYaw = atan2f(vEye.y - vEnemyView.y, vEye.x - vEnemyView.x) * 57.29578f;
+		float flDelta = flSpyYaw - flEnemyYaw;
+		while (flDelta > 180.f) flDelta -= 360.f;
+		while (flDelta < -180.f) flDelta += 360.f;
+		if (fabsf(flDelta) >= 89.f)
+			continue;
+		// LOS last: hull trace toward the closest point, must hit them.
+		const float flLen = (vClosest - vEye).Length();
+		const Vec3 vDir = (flLen > 0.001f) ? (vClosest - vEye) * (1.f / flLen) : Vec3(1.f, 0.f, 0.f);
 		CGameTrace trace = {};
-		SDK::TraceHull(vEye, vTargetCenter, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
+		SDK::TraceHull(vEye, vEye + vDir * 66.f, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
 		if (trace.m_pEnt && trace.m_pEnt == pTarget)
 		{
-			vHitPosOut = vPath[k];
-			return (int)k;
+			if (iFirst < 0) { iFirst = (int)k; vHitPosOut = vPath[k]; }
+			iHitCountOut++;
 		}
 	}
-	return -1;
+	return iFirst;
 }
 
 void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
@@ -148,7 +167,6 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 		{ -flHitbox, -flHitbox, 0.f }, { flHitbox, -flHitbox, 0.f },
 		{ 0.f, 0.f, 0.f } };
 	const Vec3 vTargetCenter = pTarget->GetCenter();
-	const float flTargetYaw = H::Entities.GetEyeAngles(pTarget->entindex()).y;
 	const int iTicks = std::clamp(Vars::Doubletap::TickLimit.Value, TRICKSTAB_HORIZON_MIN, TRICKSTAB_HORIZON_MAX);
 	DirResult_t aRes[3] = {};
 	int iDirs = 0;
@@ -161,7 +179,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 		const float flYaw = atan2f(vPoint.y - vMy.y, vPoint.x - vMy.x) * 57.29578f;
 		if (!SimDir(pLocal, flYaw, iTicks, pTarget->m_vecOrigin(), flHitbox, aRes[iDirs]))
 			continue;
-		aRes[iDirs].iHitTick = ScorePath(pLocal, pWeapon, pTarget, vTargetCenter, flTargetYaw, aRes[iDirs].vPath, aRes[iDirs].vHitPos);
+		aRes[iDirs].iHitTick = ScorePath(pLocal, pWeapon, pTarget, vLead, aRes[iDirs].vPath, aRes[iDirs].vHitPos, aRes[iDirs].iHitCount);
 		aRes[iDirs].bHittable = aRes[iDirs].iHitTick >= 0;
 		aRes[iDirs].flScore = aRes[iDirs].bHittable
 			? (vTargetCenter - aRes[iDirs].vHitPos).Length()

@@ -24,6 +24,7 @@ private:
 		bool bValid = false;
 		bool bHittable = false;
 		int iHitTick = -1;
+		int iHitCount = 0;
 		Vec3 vHitPos = {};
 		float flScore = 0.f;
 	};
@@ -33,9 +34,11 @@ private:
 	// warp skirts to behind, never through). Returns false when the sim
 	// failed/stalled elsewhere (direction unusable for warp).
 	bool SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, const Vec3& vTargetPos, float flHitbox, DirResult_t& tOut);
-	// Earliest hittable path index (behind-dot + swing range + visibility per
-	// point, CanBackstab core shape). Returns -1 when no point hits.
-	int ScorePath(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CTFPlayer* pTarget, const Vec3& vTargetCenter, float flTargetYaw, const std::vector<Vec3>& vPath, Vec3& vHitPosOut);
+	// Earliest hittable path index, mirroring Auto_Trickstab CanBackstabFromPos
+	// (AABB closest-point + BACKSTAB_RANGE sphere + yaw-delta + LOS, geometry
+	// first). Amalgam's own CanBackstab stays the authority for live firing
+	// decisions; this ranks sim-future states only. Returns -1, counts hits.
+	int ScorePath(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CTFPlayer* pTarget, const Vec3& vLeadPos, const std::vector<Vec3>& vPath, Vec3& vHitPosOut, int& iHitCountOut);
 
 public:
 	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon);
