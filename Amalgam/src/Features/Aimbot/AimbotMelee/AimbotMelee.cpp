@@ -637,26 +637,31 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 			}
 			else
 			{
+				m_iChargeTicks++;
 				const int iTicksToSmack = TIME_TO_TICKS(std::max(pWeapon->m_flSmackTime() - I::GlobalVars->curtime, 0.f));
 				auto pNetChan = I::EngineClient->GetNetChannelInfo();
 				const int iOutLatencyTicks = pNetChan ? std::max(TIME_TO_TICKS(std::max(pNetChan->GetLatency(FLOW_OUTGOING), 0.f)), 0) : 0;
 				const int iChokeMargin = std::max(I::ClientState ? I::ClientState->chokedcommands : 0, 1);
-				const int iChargeWindow = std::max(iOutLatencyTicks + iChokeMargin, 2);
+				// Floor 3: the press needs ~a tick to apply server-side plus
+				// dump jitter. "3 before the end" per testing.
+				const int iChargeWindow = std::max(iOutLatencyTicks + iChokeMargin, 3);
 
-				// Early charges on the first tracking tick (gap close: boost
-				// carries through the whole swing delay); late fires inside
-				// the latency-compensated window (max range at smack).
-				// Compressed time (warp/DT dump executed since last look:
-				// the server countdown jumps >1) presses NOW: a precise
-				// window would fire late, and early is always safe.
+				// Early = 3rd tracking tick (~swing+3, "3 after start").
 				const bool bEarly = Vars::Aimbot::Melee::ChargeTiming.Value == Vars::Aimbot::Melee::ChargeTimingEnum::Early;
+				// Reactive: countdown jumped since last look (dump executed).
 				const bool bSmackJumped = m_flLastSmackTime == pWeapon->m_flSmackTime()
 					&& m_iLastSmackTicks - iTicksToSmack > 1;
 				m_flLastSmackTime = pWeapon->m_flSmackTime();
 				m_iLastSmackTicks = iTicksToSmack;
-				if (iTicksToSmack <= iChargeWindow || bEarly || bSmackJumped)
+				// Proactive: a dump is available or warp is executing -> time
+				// will compress past any window, so press NOW and ride it.
+				// Otherwise the tail-dump fires the smack early and the Late
+				// press lands post-smack ("charges but doesn't swing").
+				const bool bRideDump = F::Ticks.GetTicks(pWeapon) > 0 || F::Ticks.m_bWarp;
+				if (iTicksToSmack <= iChargeWindow || bSmackJumped || bRideDump
+					|| (bEarly && m_iChargeTicks >= 3))
 					m_eChargeState = ChargeState::Charge;
-				else if (++m_iChargeTicks > 25)
+				else if (m_iChargeTicks > 25)
 				{
 					m_eChargeState = ChargeState::Idle;
 					m_iChargeTarget = -1;
