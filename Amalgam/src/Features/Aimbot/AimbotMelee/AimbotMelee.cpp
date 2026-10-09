@@ -175,7 +175,23 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 
 	std::unordered_map<int, MoveStorage> mMoveStorage;
 
-	F::MoveSim.Initialize(pLocal, mMoveStorage[pLocal->entindex()], false, !m_iDoubletapTicks, false);
+	// Charging local: coast, not full AI. Locks the charge course (facing
+	// yaw, full forward, charge speed cap) so predictions match the locked
+	// ~750 straight instead of strafing fiction.
+	const bool bCharging = pLocal->m_iClass() == TF_CLASS_DEMOMAN
+		&& pLocal->InCond(TF_COND_SHIELD_CHARGE);
+	F::MoveSim.Initialize(pLocal, mMoveStorage[pLocal->entindex()], false, !m_iDoubletapTicks && !bCharging, false);
+	if (bCharging)
+	{
+		auto& tLocalStorage = mMoveStorage[pLocal->entindex()];
+		const float flChargeSpeed = std::max(SDK::MaxSpeed(pLocal), 750.f);
+		tLocalStorage.m_MoveData.m_flMaxSpeed = flChargeSpeed;
+		tLocalStorage.m_MoveData.m_flClientMaxSpeed = flChargeSpeed;
+		tLocalStorage.m_MoveData.m_flForwardMove = 450.f;
+		tLocalStorage.m_MoveData.m_flSideMove = 0.f;
+		tLocalStorage.m_MoveData.m_flUpMove = 0.f;
+		tLocalStorage.m_MoveData.m_vecViewAngles = { 0.f, pCmd->viewangles.y, 0.f };
+	}
 	for (auto& tTarget : vTargets)
 		F::MoveSim.Initialize(tTarget.m_pEntity, mMoveStorage[tTarget.m_pEntity->entindex()], false, true, false);
 
@@ -190,13 +206,9 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 				iTicks = std::min(i + m_iSwingTicks, iMax), bSwung = true;
 				if (!m_iSwingTicks)
 					break;
-
-				if (pLocal->InCond(TF_COND_SHIELD_CHARGE))
-				{	// demo charge fix for swing pred
-					pLocal->RemoveCond(TF_COND_SHIELD_CHARGE);
-					tMoveStorage.m_MoveData.m_flMaxSpeed = tMoveStorage.m_MoveData.m_flClientMaxSpeed = SDK::MaxSpeed(pLocal);
-					pLocal->m_flMaxspeed() = tMoveStorage.m_MoveData.m_flMaxSpeed;
-				}
+				// (old strip-charge hack removed: charging is coast-simmed
+				// above with zero live writes; stripping lied to both sim
+				// and live state)
 			}
 			if (m_iDoubletapTicks && Vars::Doubletap::AntiWarp.Value && pLocal->m_hGroundEntity())
 				F::Ticks.AntiWarp(pLocal, pCmd->viewangles.y, tMoveStorage.m_MoveData.m_flForwardMove, tMoveStorage.m_MoveData.m_flSideMove, iMax - i - 1);
@@ -229,8 +241,11 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 	m_vEyePos = vLocalOrigin + pLocal->m_vecViewOffset();
 	m_flRange = pWeapon->GetSwingRange();
 
-	// Extend melee range to charge-reach distance when Demoman has full charge and exploit is ready
+	// Extend melee range to charge-reach distance when Demoman has full charge and exploit is ready.
+	// Early mode excluded: it gap-charges pre-swing and swings on arrival at
+	// base range; extending would fire premature whiff-swings from afar.
 	if (Vars::Aimbot::Melee::ChargeReach.Value &&
+		Vars::Aimbot::Melee::ChargeTiming.Value != Vars::Aimbot::Melee::ChargeTimingEnum::Early &&
 		pLocal->m_iClass() == TF_CLASS_DEMOMAN &&
 		pLocal->m_flChargeMeter() >= 100.f &&
 		!pLocal->InCond(TF_COND_SHIELD_CHARGE))
@@ -642,24 +657,21 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 				auto pNetChan = I::EngineClient->GetNetChannelInfo();
 				const int iOutLatencyTicks = pNetChan ? std::max(TIME_TO_TICKS(std::max(pNetChan->GetLatency(FLOW_OUTGOING), 0.f)), 0) : 0;
 				const int iChokeMargin = std::max(I::ClientState ? I::ClientState->chokedcommands : 0, 1);
-				// Floor 3: the press needs ~a tick to apply server-side plus
-				// dump jitter. "3 before the end" per testing.
-				const int iChargeWindow = std::max(iOutLatencyTicks + iChokeMargin, 3);
+				// Floor 2 (smack-2, matches qawe reference): the press needs
+				// ~a tick to apply server-side plus dump jitter.
+				const int iChargeWindow = std::max(iOutLatencyTicks + iChokeMargin, 2);
 
-				// Early = 3rd tracking tick (~swing+3, "3 after start").
-				const bool bEarly = Vars::Aimbot::Melee::ChargeTiming.Value == Vars::Aimbot::Melee::ChargeTimingEnum::Early;
-				// Reactive: countdown jumped since last look (dump executed).
+				// Post-swing (Late default, and any Early swing that happened
+				// anyway): press ASAP — the charge must be live for the smack.
+				// Window/jump/rideDump below backstop raced evaluations.
+				// (Early mode proper gap-charges pre-swing in Run; Late is the
+				// post-swing press, default.)
 				const bool bSmackJumped = m_flLastSmackTime == pWeapon->m_flSmackTime()
 					&& m_iLastSmackTicks - iTicksToSmack > 1;
 				m_flLastSmackTime = pWeapon->m_flSmackTime();
 				m_iLastSmackTicks = iTicksToSmack;
-				// Proactive: a dump is available or warp is executing -> time
-				// will compress past any window, so press NOW and ride it.
-				// Otherwise the tail-dump fires the smack early and the Late
-				// press lands post-smack ("charges but doesn't swing").
 				const bool bRideDump = F::Ticks.GetTicks(pWeapon) > 0 || F::Ticks.m_bWarp;
-				if (iTicksToSmack <= iChargeWindow || bSmackJumped || bRideDump
-					|| (bEarly && m_iChargeTicks >= 3))
+				if (m_iChargeTicks <= 1 || iTicksToSmack <= iChargeWindow || bSmackJumped || bRideDump)
 					m_eChargeState = ChargeState::Charge;
 				else if (m_iChargeTicks > 25)
 				{
@@ -749,6 +761,48 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		}
 	}
 	F::CritHack.m_bCritRefillActive = false;
+
+	// Early (pre-swing gap close): full meter, grounded, no swing in flight,
+	// no charge running. Nearest enemy player beyond base swing reach but
+	// inside charge reach, roughly ahead: face the intercept course and press
+	// charge WITHOUT swinging. Arrival swings during charge (crit path).
+	// Camera rotates for the press tick only (allowed); movement follows
+	// facing. (qawe upgrades queued: live turn-cap instead of fixed 45,
+	// FOV gate, ChargeJump.)
+	if (Vars::Aimbot::Melee::ChargeTiming.Value == Vars::Aimbot::Melee::ChargeTimingEnum::Early
+		&& Vars::Aimbot::Melee::ChargeReach.Value
+		&& pLocal->m_iClass() == TF_CLASS_DEMOMAN
+		&& pLocal->m_flChargeMeter() >= 100.f
+		&& !pLocal->InCond(TF_COND_SHIELD_CHARGE)
+		&& pWeapon->m_flSmackTime() < 0.f
+		&& pLocal->m_hGroundEntity()
+		&& m_eChargeState == ChargeState::Idle)
+	{
+		for (const auto& tTarget : vTargets)
+		{
+			auto pTargetPlayer = tTarget.m_pEntity->As<CTFPlayer>();
+			if (!pTargetPlayer || !pTargetPlayer->IsAlive() || tTarget.m_pEntity->IsDormant()
+				|| tTarget.m_iTargetType != TargetEnum::Player
+				|| tTarget.m_pEntity->m_iTeamNum() == pLocal->m_iTeamNum())
+				continue;
+			const float flDistSqr = pLocal->GetAbsOrigin().DistToSqr(tTarget.m_pEntity->GetAbsOrigin());
+			if (flDistSqr <= m_flRange * m_flRange || flDistSqr > kChargeReachDistance * kChargeReachDistance)
+				continue;
+			// Intercept: lead by charge travel time; require roughly ahead
+			// (shield turn control is minimal, never charge away).
+			const float flDist = sqrtf(flDistSqr);
+			const Vec3 vIntercept = tTarget.m_pEntity->GetAbsOrigin() + pTargetPlayer->m_vecVelocity() * (flDist / 750.f);
+			float flDiff = Math::CalcAngle(pLocal->GetShootPos(), vIntercept).y - pCmd->viewangles.y;
+			while (flDiff > 180.f) flDiff -= 360.f;
+			while (flDiff < -180.f) flDiff += 360.f;
+			if (fabsf(flDiff) > 45.f)
+				continue;
+			pCmd->viewangles.y = Math::CalcAngle(pLocal->GetShootPos(), vIntercept).y;
+			pCmd->buttons |= IN_ATTACK2;
+			G::SendPacket = true;
+			break;
+		}
+	}
 
 	auto ArmChargeTracking = [&](const Target_t& tTarget)
 	{
