@@ -531,10 +531,13 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 		m_iMinTicks = aRes[iBest].iHitTick + 1; // index -> warp length
 	}
 	// else: no winner — fields stay clear, but the sims still draw below.
-	// Assist (R6/R8): toggle drives. Commit drives on its frozen geometry
-	// even if this tick unscored; assist never plants a stale direction.
+	// Assist positions OUTSIDE warp; the warp steers its frozen claim dir
+	// regardless of keys. Manual (A/D) is yours, never the warp's: the claim
+	// fires only on scored geometry, no side is ever forced into a warp.
 	const bool bAssist = Vars::Aimbot::Melee::TrickstabAssist.Value;
-	if (m_bCommitting || (bAssist && m_bHasBest))
+	if (m_bCommitting)
+		PlantMoves(pLocal, pCmd, m_vCommitDir);
+	else if (bAssist && m_bHasBest)
 		PlantMoves(pLocal, pCmd, m_vBestDir);
 	// Commit claim: scored best + live re-test at the hit state + not
 	// currently stabbing + >= 3 points + bank covers exact length.
@@ -553,6 +556,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 			&& !StabAt(pLocal->GetShootPos(), pTarget->m_vecOrigin(), pTarget->m_vecOrigin() + pTarget->m_vecViewOffset(), flFoeYaw, flOwnerYaw, flRange, vSwingMins, vSwingMaxs, pLocal, pTarget))
 		{
 			m_bCommitting = true;
+			m_vCommitDir = m_vBestDir;
 			m_iCommitLeft = m_iMinTicks;
 			m_iCommitAge = 0;
 			F::Ticks.m_bWarp = true;

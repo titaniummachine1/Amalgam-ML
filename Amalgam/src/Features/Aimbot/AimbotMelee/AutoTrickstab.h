@@ -75,6 +75,8 @@ public:
 
 private:
 	bool m_bCommitting = false;
+	Vec3 m_vCommitDir = {}; // frozen at claim: warp steering ignores fresh
+	// selection AND manual input (assist positions, warp executes).
 	int m_iCommitLeft = 0;
 	int m_iCommitAge = 0;
 	int m_iBonusLeft = 0;
