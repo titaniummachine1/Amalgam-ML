@@ -156,6 +156,14 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 		m_iSwingTicks = std::max(iTicksToSmack - iChargeWindow, 1);
 	}
 
+	// Predict exactly to the smack, never past it. Instant smack (0 left)
+	// skips the forward sim via the gate below and aims live/live.
+	// Pre-swing the full delay is the horizon.
+	const int iSmackLeft = pWeapon->m_flSmackTime() > 0.f
+		? TIME_TO_TICKS(std::max(pWeapon->m_flSmackTime() - I::GlobalVars->curtime, 0.f))
+		: m_iSwingTicks;
+	m_iSimulatedTicks = std::min(m_iSimulatedTicks, iSmackLeft);
+
 	m_bShouldSwing = m_iDoubletapTicks <= m_iSwingTicks || Vars::Doubletap::AntiWarp.Value && pLocal->m_hGroundEntity();
 	m_bSimulatedLocal = false;
 
@@ -399,6 +407,9 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		vRecords = { &F::Backtrack.m_tRecord };
 	}
 
+	// Execution eye: swings execute now, so firing solutions originate live.
+	// The sim still predicts TARGETS to smack time (records below).
+	const Vec3 vExecEye = pLocal->GetShootPos();
 	CGameTrace trace = {};
 	CTraceFilterHitscan filter = {};
 	filter.pSkip = pLocal;
@@ -410,12 +421,12 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		// inside the box) degenerates to a zero-vector angle: keep the
 		// selection bone pos instead. Knife keeps center x/y: backstab
 		// detection needs center-based angles, that path is untouched.
-		const Vec3 vClamp = m_vEyePos.Clamp(pRecord->m_vOrigin + pRecord->m_vMins, pRecord->m_vOrigin + pRecord->m_vMaxs);
-		if (vClamp.DistToSqr(m_vEyePos) >= 1.f)
+		const Vec3 vClamp = vExecEye.Clamp(pRecord->m_vOrigin + pRecord->m_vMins, pRecord->m_vOrigin + pRecord->m_vMaxs);
+		if (vClamp.DistToSqr(vExecEye) >= 1.f)
 			tTarget.m_vPos = vClamp;
-		if (Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID() == TF_WEAPON_KNIFE)
-			tTarget.m_vPos.x = pRecord->m_vOrigin.x, tTarget.m_vPos.y = pRecord->m_vOrigin.y;
-		Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(m_vEyePos, tTarget.m_vPos), tTarget.m_vAngleTo);
+			if (Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID() == TF_WEAPON_KNIFE)
+				tTarget.m_vPos.x = pRecord->m_vOrigin.x, tTarget.m_vPos.y = pRecord->m_vOrigin.y;
+			Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(vExecEye, tTarget.m_vPos), tTarget.m_vAngleTo);
 		// Gate on the selection angle: the clamp point on steep geometry can
 		// sit outside AimFOV while the target is hittable. Rage skips it.
 		if (!Vars::Aimbot::Melee::Rage.Value && !F::AimbotGlobal.ShouldAimAtAngle(vSelectAngle))
@@ -430,7 +441,7 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		tTarget.m_pEntity->m_vecMaxs() = pRecord->m_vMaxs - PLAYER_ORIGIN_COMPRESSION;
 
 		Vec3 vForward; Math::AngleVectors(tTarget.m_vAngleTo, &vForward);
-		Vec3 vTraceEnd = m_vEyePos + vForward * flRange;
+		Vec3 vTraceEnd = vExecEye + vForward * flRange;
 
 		SDK::TraceHull(m_vEyePos, vTraceEnd, {}, {}, MASK_SOLID, &filter, &trace);
 		bool bReturn = trace.m_pEnt == tTarget.m_pEntity;
@@ -459,10 +470,10 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		case Vars::Aimbot::General::AimTypeEnum::Smooth:
 		case Vars::Aimbot::General::AimTypeEnum::Assistive:
 		{
-			auto vAngle = Math::CalcAngle(m_vEyePos, tTarget.m_vPos);
+			auto vAngle = Math::CalcAngle(vExecEye, tTarget.m_vPos);
 
 			Math::AngleVectors(vAngle, &vForward);
-			vTraceEnd = m_vEyePos + vForward * flRange;
+			vTraceEnd = vExecEye + vForward * flRange;
 
 			SDK::TraceHull(m_vEyePos, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
 			if (trace.m_pEnt == tTarget.m_pEntity)
@@ -801,7 +812,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		else
 		{
 			m_vEyePos = pLocal->GetShootPos();
-			Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(m_vEyePos, tTarget.m_vPos), tTarget.m_vAngleTo);
+		Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(m_vEyePos, tTarget.m_vPos), tTarget.m_vAngleTo);
 		}
 		DrawVisuals(pLocal, pWeapon, pCmd, tTarget, m_mPaths);
 
