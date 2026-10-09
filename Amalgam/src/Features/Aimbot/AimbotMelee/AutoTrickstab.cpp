@@ -3,13 +3,25 @@
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
 #include "../../../SDK/VarsMelee.h"
 
-// Fan constants. Spread is user-tunable later (no menu yet, phase 1);
-// vertical band picks center-only on stairs (lateral fan is useless there).
-#define TRICKSTAB_FAN_HALF_DEG 45.f
-#define TRICKSTAB_VERTICAL_BAND 40.f
+// LUT-faithful port of Auto_Trickstab (qawe) direction logic; SIMULATION is
+// Amalgam engine (MoveSim) instead of Lua math. Deliberate deviations (all
+// noted): hull radii for hitbox radii (mapped fields), no TARGET_EXTENSION /
+// coast pass (engine integrates internally), no manual A/D side override or
+// yaw-delta side preference (movement-commitment phase), no TF2.* constant
+// table (live sv_* via engine), trace target is GetCenter (not per-point
+// clamp; scoring only, the stab itself still aims clamp-point via aimbot).
+#define TRICKSTAB_RANGE_GATE 600.f
 #define TRICKSTAB_HORIZON_MIN 8
 #define TRICKSTAB_HORIZON_MAX 24
 #define TRICKSTAB_DEG2RAD 0.0174532925f
+
+// Direction -> corner subset LUT, verbatim shape (0-indexed corners:
+// TL,TR,BL,BR at +/-hitbox, [4] = center; -1 pads short rows).
+static const int TRICKSTAB_LUT[3][3][3] = {
+	{ {4,3,0}, {4,3,1}, {4,2,1} },
+	{ {4,1,0}, {4,-1,-1}, {4,2,3} },
+	{ {4,1,2}, {4,0,2}, {4,0,3} },
+};
 
 bool CAutoTrickstab::SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, DirResult_t& tOut)
 {
@@ -42,32 +54,37 @@ bool CAutoTrickstab::SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, DirRe
 	return tOut.bValid;
 }
 
-bool CAutoTrickstab::ScoreDir(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CTFPlayer* pTarget, const DirResult_t& tDir)
+int CAutoTrickstab::ScorePath(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CTFPlayer* pTarget, const Vec3& vTargetCenter, float flTargetYaw, const std::vector<Vec3>& vPath, Vec3& vHitPosOut)
 {
-	// Behind-dot (CanBackstab core shape): victim facing vs us-at-end.
-	Vec3 vToT = pTarget->m_vecOrigin() - tDir.vEnd;
-	vToT.z = 0.f;
-	const float flDist = (pTarget->m_vecOrigin() - tDir.vEnd).Length();
 	float flRange = SDK::AttribHookValue(pWeapon->GetSwingRange(), "melee_range_multiplier", pWeapon);
 	if (pLocal->m_flModelScale() > 1.0f)
 		flRange *= pLocal->m_flModelScale();
-	if (flDist < 0.001f || flDist > flRange)
-		return false;
-	vToT = vToT * (1.f / flDist);
-	const float flTargetYaw = H::Entities.GetEyeAngles(pTarget->entindex()).y;
-	const float flRad = flTargetYaw * TRICKSTAB_DEG2RAD;
-	const Vec3 vTargetFwd = { cosf(flRad), sinf(flRad), 0.f };
-	if (vToT.Dot(vTargetFwd) <= 0.f)
-		return false; // not behind
-	// Visibility from sim end (swing hull): no wall between.
-	CTraceFilterHitscan filter = {};
-	filter.pSkip = pLocal;
-	CGameTrace trace = {};
 	const float flHull = SDK::AttribHookValue(18, "melee_bounds_multiplier", pWeapon);
 	const Vec3 vSwingMins = { -flHull, -flHull, -flHull };
 	const Vec3 vSwingMaxs = { flHull, flHull, flHull };
-	SDK::TraceHull(tDir.vEnd + pLocal->m_vecViewOffset(), pTarget->GetCenter(), vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
-	return trace.m_pEnt && trace.m_pEnt == pTarget;
+	const float flRad = flTargetYaw * TRICKSTAB_DEG2RAD;
+	const Vec3 vTargetFwd = { cosf(flRad), sinf(flRad), 0.f };
+	CTraceFilterHitscan filter = {};
+	filter.pSkip = pLocal;
+	for (size_t k = 0; k < vPath.size(); k++)
+	{
+		const Vec3 vEye = vPath[k] + pLocal->m_vecViewOffset();
+		Vec3 vToT = vTargetCenter - vEye;
+		vToT.z = 0.f;
+		const float flDist = (vTargetCenter - vEye).Length();
+		if (flDist < 0.001f || flDist > flRange)
+			continue;
+		if ((vToT * (1.f / flDist)).Dot(vTargetFwd) <= 0.f)
+			continue; // not behind
+		CGameTrace trace = {};
+		SDK::TraceHull(vEye, vTargetCenter, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
+		if (trace.m_pEnt && trace.m_pEnt == pTarget)
+		{
+			vHitPosOut = vPath[k];
+			return (int)k;
+		}
+	}
+	return -1;
 }
 
 void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
@@ -81,6 +98,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 	if (!pLocal->IsAlive())
 		return;
 	// Nearest live enemy player (frozen-world assumption: evaluated once).
+	// Beyond warp-relevant range the fan is pointless: skip all sims.
 	CTFPlayer* pTarget = nullptr;
 	float flBest = std::numeric_limits<float>::max();
 	for (auto pEntity : H::Entities.GetGroup(EntityEnum::PlayerEnemy))
@@ -97,42 +115,74 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 			pTarget = pEnemy;
 		}
 	}
-	if (!pTarget)
+	if (!pTarget || flBest > TRICKSTAB_RANGE_GATE * TRICKSTAB_RANGE_GATE)
 		return;
-	// Fan: to-target center, +/-45; center-only across floors.
-	const Vec3 vTo = pTarget->m_vecOrigin() - pLocal->m_vecOrigin();
-	const float flBaseYaw = atan2f(vTo.y, vTo.x) * 57.29578f;
-	const float flDz = pTarget->m_vecOrigin().z - pLocal->m_vecOrigin().z;
-	float aYaws[3] = { flBaseYaw, 0.f, 0.f };
-	int iDirs = 1;
-	if (fabsf(flDz) <= TRICKSTAB_VERTICAL_BAND)
+	// Lag-compensated target pos (half ping * velocity), like the reference:
+	// the warp transmits across latency, score where they'll be, not are.
+	Vec3 vLead = pTarget->m_vecOrigin();
+	if (auto pNetChan = I::EngineClient->GetNetChannelInfo())
 	{
-		aYaws[0] = flBaseYaw - TRICKSTAB_FAN_HALF_DEG;
-		aYaws[1] = flBaseYaw;
-		aYaws[2] = flBaseYaw + TRICKSTAB_FAN_HALF_DEG;
-		iDirs = 3;
+		const float flLeadT = (std::max(pNetChan->GetLatency(FLOW_OUTGOING), 0.f) + std::max(pNetChan->GetLatency(FLOW_INCOMING), 0.f)) * 0.5f;
+		vLead = vLead + pTarget->m_vecVelocity() * flLeadT;
 	}
+	// Relative quadrant (verbatim: 1u buffer, vertical gate zeroes it) then
+	// the corner subset LUT. Corners at +-combined hull radii, world axes.
+	const float flHitbox = pLocal->m_vecMaxs().x + pTarget->m_vecMaxs().x;
+	const float flVertRange = pTarget->m_vecMaxs().z - pTarget->m_vecMins().z;
+	const Vec3 vMy = pLocal->m_vecOrigin();
+	const float flDx = vLead.x - vMy.x, flDy = vLead.y - vMy.y, flDz = vLead.z - vMy.z;
+	const int iVert = (fabsf(flDz) > flVertRange) ? 1 : 0;
+	const int iQx = (((flDx > flHitbox - 1.f) ? 1 : 0) - ((flDx < -flHitbox + 1.f) ? 1 : 0)) * (1 - iVert);
+	const int iQy = (((flDy > flHitbox - 1.f) ? 1 : 0) - ((flDy < -flHitbox + 1.f) ? 1 : 0)) * (1 - iVert);
+	const Vec3 vCorners[5] = {
+		{ -flHitbox, flHitbox, 0.f }, { flHitbox, flHitbox, 0.f },
+		{ -flHitbox, -flHitbox, 0.f }, { flHitbox, -flHitbox, 0.f },
+		{ 0.f, 0.f, 0.f } };
+	const Vec3 vTargetCenter = pTarget->GetCenter();
+	const float flTargetYaw = H::Entities.GetEyeAngles(pTarget->entindex()).y;
 	const int iTicks = std::clamp(Vars::Doubletap::TickLimit.Value, TRICKSTAB_HORIZON_MIN, TRICKSTAB_HORIZON_MAX);
 	DirResult_t aRes[3] = {};
-	for (int i = 0; i < iDirs; i++)
+	int iDirs = 0;
+	for (int k = 0; k < 3; k++)
 	{
-		if (!SimDir(pLocal, aYaws[i], iTicks, aRes[i]))
+		const int iCorner = TRICKSTAB_LUT[iQx + 1][iQy + 1][k];
+		if (iCorner < 0 || iCorner > 4)
+			break;
+		const Vec3 vPoint = vLead + vCorners[iCorner];
+		const float flYaw = atan2f(vPoint.y - vMy.y, vPoint.x - vMy.x) * 57.29578f;
+		if (!SimDir(pLocal, flYaw, iTicks, aRes[iDirs]))
 			continue;
-		aRes[i].bHittable = ScoreDir(pLocal, pWeapon, pTarget, aRes[i]);
-		aRes[i].flScore = (pTarget->m_vecOrigin() - aRes[i].vEnd).Length();
+		aRes[iDirs].iHitTick = ScorePath(pLocal, pWeapon, pTarget, vTargetCenter, flTargetYaw, aRes[iDirs].vPath, aRes[iDirs].vHitPos);
+		aRes[iDirs].bHittable = aRes[iDirs].iHitTick >= 0;
+		aRes[iDirs].flScore = aRes[iDirs].bHittable
+			? (vTargetCenter - aRes[iDirs].vHitPos).Length()
+			: (pTarget->m_vecOrigin() - aRes[iDirs].vEnd).Length();
+		iDirs++;
 	}
-	// Best: hittable first (nearest end), else nearest end overall.
+	if (!iDirs)
+		return;
+	// Best: earliest hittable tick, then nearest; else nearest end overall.
 	int iBest = -1;
 	for (int iPass = 0; iPass < 2 && iBest < 0; iPass++)
 	{
+		int iBestTick = INT_MAX;
 		float flS = std::numeric_limits<float>::max();
 		for (int i = 0; i < iDirs; i++)
 		{
 			if (!aRes[i].bValid)
 				continue;
-			if (iPass == 0 && !aRes[i].bHittable)
-				continue;
-			if (aRes[i].flScore < flS)
+			if (iPass == 0)
+			{
+				if (!aRes[i].bHittable)
+					continue;
+				if (aRes[i].iHitTick < iBestTick || (aRes[i].iHitTick == iBestTick && aRes[i].flScore < flS))
+				{
+					iBestTick = aRes[i].iHitTick;
+					flS = aRes[i].flScore;
+					iBest = i;
+				}
+			}
+			else if (aRes[i].flScore < flS)
 			{
 				flS = aRes[i].flScore;
 				iBest = i;
@@ -144,8 +194,8 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 	m_bHasBest = true;
 	m_vBestDir = aRes[iBest].vDir;
 	m_bBestHittable = aRes[iBest].bHittable;
-	// Draw: all valid paths dim, best green (hittable) / yellow, end marker
-	// + link to target. Short expiry: refreshed per tick, self-cleaning.
+	// Draw: all valid paths dim, best green (hittable) / yellow, hit marker +
+	// target link. Short expiry: refreshed per tick, self-cleaning.
 	const float flUntil = I::GlobalVars->curtime + 1.f;
 	for (int i = 0; i < iDirs; i++)
 	{
@@ -159,8 +209,9 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(aRes[i].vPath[k], aRes[i].vPath[k + 1]), flUntil, tCol, true);
 		if (bIsBest)
 		{
-			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(aRes[i].vEnd, aRes[i].vEnd + Vec3(0, 0, 5)), flUntil, tCol, true);
-			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(aRes[i].vEnd, pTarget->m_vecOrigin()), flUntil, Color_t(255, 255, 0), true);
+			const Vec3 vMark = aRes[i].bHittable ? aRes[i].vHitPos : aRes[i].vEnd;
+			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vMark, vMark + Vec3(0, 0, 5)), flUntil, tCol, true);
+			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vMark, vTargetCenter), flUntil, Color_t(255, 255, 0), true);
 		}
 	}
 }
