@@ -731,6 +731,7 @@ void CMenu::MenuHVH(int iTab)
 					FSlider(Vars::Doubletap::WarpRate, FSliderEnum::Right);
 					FSlider(Vars::Doubletap::RechargeLimit, FSliderEnum::Left);
 					FSlider(Vars::Doubletap::PassiveRecharge, FSliderEnum::Right);
+					FToggle(Vars::Aimbot::Melee::AutoTrickstab, FToggleEnum::Left);
 				} EndSection();
 				if (Section("Fakelag"))
 				{

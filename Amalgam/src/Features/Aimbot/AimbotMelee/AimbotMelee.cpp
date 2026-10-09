@@ -1,6 +1,7 @@
 #include "AimbotMelee.h"
 
 #include "../Aimbot.h"
+#include "AutoTrickstab.h"
 #include "../../../SDK/VarsMelee.h"
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
 #include "../../EnginePrediction/EnginePrediction.h"
@@ -632,6 +633,8 @@ static inline void DrawVisuals(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserC
 
 void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
+	// Auto trickstab warp-fan viz (phase 1: simulate + draw only, no writes).
+	F::AutoTrickstab.Run(pLocal, pWeapon);
 	// Charge reach follow-up: fires IN_ATTACK2 in the latency-aware window
 	// before smack. Runs before all early returns so the charge still
 	// executes if the target leaves normal melee range mid-swing.
