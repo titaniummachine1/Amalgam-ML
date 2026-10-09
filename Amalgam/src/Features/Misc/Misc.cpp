@@ -6,6 +6,7 @@
 #include "../Players/PlayerUtils.h"
 #include "../Aimbot/AutoRocketJump/AutoRocketJump.h"
 #include "../AntiCheatCompatibility/AntiCheatCompatibility.h"
+#include "../Aimbot/AimbotMelee/AutoTrickstab.h"
 #include "SmartJump/SmartJump.h"
 
 void CMisc::RunPre(CTFPlayer* pLocal, CUserCmd* pCmd)
@@ -351,6 +352,8 @@ void CMisc::TauntKartControl(CTFPlayer* pLocal, CUserCmd* pCmd)
 
 void CMisc::FastMovement(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
+	if (F::AutoTrickstab.IsCommitting())
+		return;
 	if (!pLocal->m_hGroundEntity() || pLocal->InCond(TF_COND_HALLOWEEN_KART))
 		return;
 

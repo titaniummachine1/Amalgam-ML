@@ -347,22 +347,35 @@ bool CAimbotMelee::CanBackstab(CBaseEntity* pTarget, CTFPlayer* pLocal, Vec3 vEy
 	};
 
 	Vec3 vTargetAngles = { 0.f, H::Entities.GetEyeAngles(pTarget->entindex()).y, 0.f };
+	bool bStab = false;
 	if (!(Vars::Aimbot::Melee::BackstabFlags.Value & Vars::Aimbot::Melee::BackstabFlagsEnum::AccountPing))
-	{
-		if (!fTestDots(vTargetAngles))
-			return false;
-	}
+		bStab = fTestDots(vTargetAngles);
 	else
 	{
 		if (Vars::Aimbot::Melee::BackstabFlags.Value & Vars::Aimbot::Melee::BackstabFlagsEnum::DoubleTest && !fTestDots(vTargetAngles))
-			return false;
-
-		vTargetAngles.y += H::Entities.GetDeltaAngles(pTarget->entindex()).y;
-		if (!fTestDots(vTargetAngles))
-			return false;
+			bStab = false;
+		else
+		{
+			vTargetAngles.y += H::Entities.GetDeltaAngles(pTarget->entindex()).y;
+			bStab = fTestDots(vTargetAngles);
+		}
+	}
+	if (!bStab && Vars::Aimbot::Melee::AutoTrickstab.Value && F::AutoTrickstab.IsCommitting())
+	{
+		// Commit ghost second chance: the warp may arrive behind a backtrack
+		// record while the foe's LIVE facing vetoes the dots (spun target).
+		// The swing's tick_count rewinds to records, so record dots are the
+		// truth — test the newest valid record yaw before refusing the stab.
+		std::vector<TickRecord*> vRecsB;
+		if (F::Backtrack.GetRecords(pTarget, vRecsB))
+		{
+			vRecsB = F::Backtrack.GetValidRecords(vRecsB, nullptr);
+			if (!vRecsB.empty() && !vRecsB.front()->m_bInvalid)
+				bStab = fTestDots({ 0.f, vRecsB.front()->m_vEyeAngles.y, 0.f });
+		}
 	}
 
-	return true;
+	return bStab;
 }
 
 int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon)

@@ -48,11 +48,13 @@ const BufferedCmd_t* CPacketBuffer::Get(int iCommandNumber) const
 // Fake peek driver (System A: causality). Decided per tick at CreateMove end:
 // - home/disabled: normal, clear peek state.
 // - out peeking, no shot: WITHHOLD (server keeps seeing pivot).
-// - window/tick-cap exceeded, no shot: ABORT (walk back withheld, resume at
-//   pivot with the tour neutralized in Release).
+// - window/tick-cap exceeded, no shot: ABORT (rubberband). No steering —
+//   the withheld tour is neutralized in Release and the client snaps to the
+//   pivot the server kept seeing. m_bPeekReturning latches "hands off until
+//   home" so we don't re-withhold before the snap lands.
 // - shot (any attack): COMMIT (send everything incl. backlog: the shot lands
-//   from the peek spot), then warp-back dumps accelerate the base WalkTo
-//   return when WarpBack is on and banked, else normal-speed return.
+//   from the peek spot), then walk back to the pivot (warp-back dump
+//   accelerates it when WarpBack is on and banked).
 void CPacketBuffer::RunPeek(CTFPlayer* pLocal, CUserCmd* pCmd, bool* pSendPacket)
 {
 	if (!pLocal || !pCmd || !pSendPacket)
@@ -74,25 +76,84 @@ void CPacketBuffer::RunPeek(CTFPlayer* pLocal, CUserCmd* pCmd, bool* pSendPacket
 		m_bPeekCommitted = true;
 		m_bPeekReturning = false;
 		m_iPeekTicks = 0;
+		// Immediate warp-back delivery: force-send THIS tick so the shot +
+		// the whole withheld tour burst out at once (the backlog IS the warp
+		// — engine sends all choked in one packet). Ticks-bank dump
+		// (WarpBack below) accelerates further when banked; the full-press
+		// WalkTo after it is already speed-maximized (450, engine-clamped).
+		G::SendPacket = true;
 	}
-	else if (!m_bPeekCommitted)
+	else if (!m_bPeekCommitted && !m_bPeekReturning)
 	{
 		*pSendPacket = false;
 		m_bPeekRun = true;
 		if (pLocal->m_vecOrigin().DistTo2D(m_vPeekPivot) > Vars::AutoPeek::FakePeekWindow.Value || m_iChokedRun > 22)
-			m_bPeekReturning = true;
+			m_bPeekReturning = true; // abort latch: snap home, zero steering
 	}
 	if ((m_bPeekCommitted || m_bPeekReturning) && ++m_iPeekTicks > 66)
 	{
 		m_bPeekCommitted = m_bPeekReturning = m_bPeekRun = false;
 		m_iPeekTicks = 0;
 	}
-	if (m_bPeekCommitted && Vars::AutoPeek::WarpBack.Value && F::Ticks.GetTicks() > 0)
-		F::Ticks.m_bDoubletap = true;
-	else if (m_bPeekReturning)
+	if (m_bPeekReturning && m_iPeekTicks == 1)
+		G::SendPacket = true; // abort releases NOW (neutralized in Release): snap within ping, not window
+	if (m_bPeekCommitted && Vars::AutoPeek::WarpBack.Value)
 	{
+		// Unconditional warp-back: goal straight to 0 (same pattern as the
+		// trickstab claim — lower the goal, next Move bursts). NO bank
+		// comparison: under recharge the goal rides above shifted by design,
+		// so any comparison reads empty on a full 24 bank. Dumping spends the
+		// shared pool; that IS the price of the ride home. WalkTo below
+		// streams when truly empty.
+		BootLog("PEEK warpback");
+		F::Ticks.m_bWarp = true;
+		F::Ticks.m_iShiftedGoal = 0;
+	}
+	if (m_bPeekCommitted && G::Attacking != 1)
+	{
+		// Shot fired: the ONLY auto-steer fake peek does — walk back to the
+		// pivot (shot tick itself untouched: moves never decide hits).
 		SDK::WalkTo(pCmd, pLocal, m_vPeekPivot);
 		pCmd->buttons &= ~IN_JUMP;
+		// Warp-home hold: bank the full-press return tour in the engine
+		// backlog (never past the overchoke ceiling) and release it as a
+		// burst home — re-holds after each release until home: burst-hops.
+		// Needs no Ticks bank: the withheld tour IS the warp fuel.
+		if (Vars::AutoPeek::WarpBack.Value && m_iChokedRun < 21)
+			*pSendPacket = false;
+	}
+	// m_bPeekReturning (abort latch): hands off entirely. The snap handles it.
+	// Transition trace (transitions only): proves withhold/abort/commit/home.
+	static bool s_bTOut = false, s_bTLat = false, s_bTCom = false, s_bTPlace = true;
+	const bool bTPlaced = Vars::AutoPeek::FakePeek.Value && m_bPeekPlaced;
+	if (bTPlaced != s_bTPlace) { s_bTPlace = bTPlaced; BootLog(s_bTPlace ? "PEEK pivot ok" : "PEEK no pivot"); }
+	const bool bOutNow = bTPlaced && pLocal->m_vecOrigin().DistTo2D(m_vPeekPivot) >= 8.f && G::Attacking != 1 && !m_bPeekCommitted && !m_bPeekReturning;
+	if (bOutNow && !s_bTOut) BootLog("PEEK withhold");
+	s_bTOut = bOutNow;
+	if (m_bPeekReturning && !s_bTLat) BootLog("PEEK abort");
+	s_bTLat = m_bPeekReturning;
+	if (m_bPeekCommitted && !s_bTCom) BootLog("PEEK commit");
+	s_bTCom = m_bPeekCommitted;
+}
+
+// Standalone history drop: neutralize a withheld run in the engine queue so
+// the server never receives it — as if we never moved (causality overwrite,
+// not rubberband). Reusable core for future packet-domain work: pass any
+// [start, current) command span. Slot-guarded: never touches reused slots.
+static void DropChokedRun(int iRunStart, int iCommandNumber)
+{
+	for (int i = iRunStart; i < iCommandNumber; i++)
+	{
+		const int iSlot = i % MULTIPLAYER_BACKUP;
+		CUserCmd* pEngine = &I::Input->m_pCommands[iSlot];
+		CVerifiedUserCmd* pVer = &I::Input->m_pVerifiedCommands[iSlot];
+		if (!pEngine || !pVer || pEngine->command_number != i || pVer->m_cmd.command_number != i)
+			continue; // slot reused, never touch foreign ticks
+		pEngine->forwardmove = pEngine->sidemove = pEngine->upmove = 0.f;
+		pEngine->buttons &= ~(IN_DUCK | IN_JUMP);
+		pVer->m_cmd.forwardmove = pVer->m_cmd.sidemove = pVer->m_cmd.upmove = 0.f;
+		pVer->m_cmd.buttons &= ~(IN_DUCK | IN_JUMP);
+		pVer->m_crc = CRC32_ProcessSingleBuffer(&pVer->m_cmd, sizeof(CUserCmd));
 	}
 }
 
@@ -108,22 +169,10 @@ void CPacketBuffer::Release(CUserCmd* pCmd, bool bSendPacket)
 		return;
 	if (m_bPeekRun && !m_bPeekCommitted)
 	{
-		// Peek abort: neutralize the withheld tour (stand at pivot) instead
-		// of transmitting it. Abort runs never contain attacks (any attack
+		// Peek abort: drop the withheld tour (stand at pivot) instead of
+		// transmitting it. Abort runs never contain attacks (any attack
 		// commits first); movement/ducks are discarded history.
-		for (int i = m_iRunStart; i < pCmd->command_number; i++)
-		{
-			const int iSlot = i % MULTIPLAYER_BACKUP;
-			CUserCmd* pEngine = &I::Input->m_pCommands[iSlot];
-			CVerifiedUserCmd* pVer = &I::Input->m_pVerifiedCommands[iSlot];
-			if (!pEngine || !pVer || pEngine->command_number != i || pVer->m_cmd.command_number != i)
-				continue; // slot reused, never touch foreign ticks
-			pEngine->forwardmove = pEngine->sidemove = pEngine->upmove = 0.f;
-			pEngine->buttons &= ~(IN_DUCK | IN_JUMP);
-			pVer->m_cmd.forwardmove = pVer->m_cmd.sidemove = pVer->m_cmd.upmove = 0.f;
-			pVer->m_cmd.buttons &= ~(IN_DUCK | IN_JUMP);
-			pVer->m_crc = CRC32_ProcessSingleBuffer(&pVer->m_cmd, sizeof(CUserCmd));
-		}
+		DropChokedRun(m_iRunStart, pCmd->command_number);
 		m_bPeekRun = false;
 		return;
 	}

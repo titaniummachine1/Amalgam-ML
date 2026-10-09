@@ -498,7 +498,6 @@ void CMenu::MenuAimbot(int iTab)
 					SameLine(); DebugDummy({ 0, H::Draw.Scale(48) });
 					FToggle(Vars::Visuals::Prediction::SwingLines);
 					FToggle(Vars::Aimbot::Melee::TrickstabDraw);
-					FToggle(Vars::Aimbot::Melee::TrickstabDraw);
 					FSlider(Vars::Visuals::Prediction::PlayerDrawDuration, FSliderEnum::Left, !Vars::Visuals::Prediction::PlayerDrawDuration[DEFAULT_BIND] ? "timed" : "%g");
 					FSlider(Vars::Visuals::Prediction::ProjectileDrawDuration, FSliderEnum::Right, !Vars::Visuals::Prediction::ProjectileDrawDuration[DEFAULT_BIND] ? "timed" : "%g");
 				} EndSection();
