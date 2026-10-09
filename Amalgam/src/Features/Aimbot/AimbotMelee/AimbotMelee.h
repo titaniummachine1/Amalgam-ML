@@ -29,6 +29,11 @@ private:
 	ChargeState m_eChargeState = ChargeState::Idle;
 	int m_iChargeTicks = 0;
 	int m_iChargeTarget = -1;
+	// Smack-countdown jump detector: last observed smack time + countdown.
+	// A drop >1 between observations means compressed time (warp/DT dump),
+	// and any precise window would fire late -> press now instead.
+	float m_flLastSmackTime = -1.f;
+	int m_iLastSmackTicks = 0;
 
 	std::unordered_map<int, std::deque<TickRecord>> m_mRecordMap;
 	std::unordered_map<int, std::vector<Vec3>> m_mPaths;

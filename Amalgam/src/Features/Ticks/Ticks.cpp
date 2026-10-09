@@ -3,7 +3,6 @@
 #include "../PacketManip/AntiAim/AntiAim.h"
 #include "../EnginePrediction/EnginePrediction.h"
 #include "../Aimbot/AutoRocketJump/AutoRocketJump.h"
-#include "../Aimbot/AimbotMelee/AimbotMelee.h"
 #include "../Backtrack/Backtrack.h"
 #include "../AntiCheatCompatibility/AntiCheatCompatibility.h"
 
@@ -51,8 +50,6 @@ void CTicks::Warp()
 	if (!Vars::Doubletap::Warp.Value
 		|| !m_iShiftedTicks || m_bDoubletap || m_bRecharge || m_bSpeedhack)
 		return;
-	if (F::AimbotMelee.IsChargeBusy())
-		return; // charge-reach window: warping would mistime IN_ATTACK2
 
 	m_bWarp = true;
 	m_iShiftedGoal = std::max(m_iShiftedTicks - Vars::Doubletap::WarpRate.Value + 1, 0);
@@ -62,12 +59,9 @@ void CTicks::Doubletap(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
 	if (!m_bGoalReached)
 		return;
-
 	if (!Vars::Doubletap::Doubletap.Value
 		|| m_iWait || m_bWarp || m_bRecharge || m_bSpeedhack)
 		return;
-	if (F::AimbotMelee.IsChargeBusy())
-		return; // charge-reach window: shifting would mistime IN_ATTACK2
 
 	int iTicks = std::min(m_iShiftedTicks + 1, 22);
 	auto pWeapon = H::Entities.GetWeapon();

@@ -1,6 +1,7 @@
 #include "AimbotMelee.h"
 
 #include "../Aimbot.h"
+#include "../../../SDK/VarsMelee.h"
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
 #include "../../EnginePrediction/EnginePrediction.h"
 #include "../../Ticks/Ticks.h"
@@ -623,8 +624,15 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 				// Early charges on the first tracking tick (gap close: boost
 				// carries through the whole swing delay); late fires inside
 				// the latency-compensated window (max range at smack).
+				// Compressed time (warp/DT dump executed since last look:
+				// the server countdown jumps >1) presses NOW: a precise
+				// window would fire late, and early is always safe.
 				const bool bEarly = Vars::Aimbot::Melee::ChargeTiming.Value == Vars::Aimbot::Melee::ChargeTimingEnum::Early;
-				if (iTicksToSmack <= iChargeWindow || (bEarly && m_iChargeTicks == 0))
+				const bool bSmackJumped = m_flLastSmackTime == pWeapon->m_flSmackTime()
+					&& m_iLastSmackTicks - iTicksToSmack > 1;
+				m_flLastSmackTime = pWeapon->m_flSmackTime();
+				m_iLastSmackTicks = iTicksToSmack;
+				if (iTicksToSmack <= iChargeWindow || bEarly || bSmackJumped)
 					m_eChargeState = ChargeState::Charge;
 				else if (++m_iChargeTicks > 25)
 				{

@@ -389,28 +389,6 @@ NAMESPACE_BEGIN(Vars)
 				RunReduce = 1 << 0, CalculateIncrease = 1 << 1);
 		NAMESPACE_END(Projectile)
 
-		NAMESPACE_BEGIN(Melee)
-			CVar(AutoBackstab, "Auto backstab", true);
-			CVar(IgnoreRazorback, "Ignore razorback", false);
-			CVar(SwingPrediction, "Swing prediction", true);
-			CVar(WhipTeam, "Whip team", false);
-			CVar(ChargeReach, "Charge reach", false);
-			CVarEnum(ChargeTiming, "Charge timing", 1, NONE, nullptr,
-				VA_LIST("Early", "Late"),
-				Early, Late);
-			CVar(CritRefill, "Auto crit refill", false);
-			CVar(CritRefillAmount, "Crit refill amount", 5, SLIDER_CLAMP, 1, 25);
-
-			CVar(SwingTicks, "Swing ticks", 13, NOSAVE | DEBUGVAR | SLIDER_MIN, 0, 14);
-			CVar(SwingPredictLag, "Swing predict lag", true, NOSAVE | DEBUGVAR);
-			CVarEnum(SwingValidateMode, "Swing validate mode", 0, NOSAVE | DEBUGVAR, nullptr,
-				VA_LIST("Both", "Swing", "Simulated"),
-				Both, Swing, Simulated);
-			CVarEnum(BackstabFlags, "Backstab flags", 0b11, NOSAVE | DEBUGVAR | DROPDOWN_MULTI, nullptr,
-				VA_LIST("Account ping", "Double test"),
-				AccountPing = 1 << 0, DoubleTest = 1 << 1);
-		NAMESPACE_END(Melee)
-
 		NAMESPACE_BEGIN(Healing)
 			CVarEnum(HealPriority, "Heal priority", 0, NONE, nullptr,
 				VA_LIST("None", "Prioritize team", "Prioritize friends", "Friends only"),
