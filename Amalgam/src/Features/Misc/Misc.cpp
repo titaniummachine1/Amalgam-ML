@@ -2,6 +2,7 @@
 
 #include "../Backtrack/Backtrack.h"
 #include "../Ticks/Ticks.h"
+#include "../PacketManip/PacketBuffer/PacketBuffer.h"
 #include "../Players/PlayerUtils.h"
 #include "../Aimbot/AutoRocketJump/AutoRocketJump.h"
 #include "../AntiCheatCompatibility/AntiCheatCompatibility.h"
@@ -405,6 +406,9 @@ void CMisc::AutoPeek(CTFPlayer* pLocal, CUserCmd* pCmd, bool bPost)
 
 	if (!bPost)
 	{
+		// Publish pivot for the fake-peek driver (PacketBuffer, hook end).
+		F::PacketBuffer.m_bPeekPlaced = m_bPeekPlaced;
+		F::PacketBuffer.m_vPeekPivot = m_vPeekReturnPos;
 		if (Vars::AutoPeek::Enabled.Value)
 		{
 			Vec3 vLocalPos = pLocal->m_vecOrigin();

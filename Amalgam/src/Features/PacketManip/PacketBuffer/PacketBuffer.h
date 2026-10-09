@@ -27,7 +27,19 @@ private:
 	int m_iRunStart = 0;
 
 public:
+	// Fake-peek state (published by CMisc::AutoPeek pre-phase each tick;
+	// rest driven here at CreateMove end).
+	bool m_bPeekPlaced = false;
+	Vec3 m_vPeekPivot = {};
+	bool m_bPeekCommitted = false;
+	bool m_bPeekReturning = false;
+	bool m_bPeekRun = false;
+	int m_iPeekTicks = 0;
+
 	void Snapshot(CUserCmd* pCmd, bool bSendPacket);
+	// Fake peek driver (System A): withhold/abort/commit/warp-back. Runs at
+	// CreateMove end (post-aimbot), may clear *pSendPacket and request dumps.
+	void RunPeek(CTFPlayer* pLocal, CUserCmd* pCmd, bool* pSendPacket);
 	// Slice 2: rewrite the engine's queued cmds for the released run (see
 	// .cpp). Called at CreateMove end on release ticks; the engine transmits
 	// later this frame.

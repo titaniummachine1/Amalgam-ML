@@ -112,9 +112,11 @@ MAKE_HOOK(CHLClient_CreateMove, U::Memory.GetVirtual(I::Client, 21), void,
 	F::EnginePrediction.End(pLocal, pCmd);
 		F::Resolver.CreateMove();
 		F::NoSpreadHitscan.AskForPlayerPerf();
+	F::PacketBuffer.RunPeek(pLocal, pCmd, pSendPacket);
 	if (G::SendPacket)
 		*pSendPacket = true; // force-send requests (charge reach, warp): applied after all choke decisions
 	G::SendPacket = false;
+	F::PacketBuffer.Release(pCmd, *pSendPacket);
 	F::PacketBuffer.Snapshot(pCmd, *pSendPacket);
 	F::PacketBuffer.Release(pCmd, *pSendPacket);
 	G::Choking = !*pSendPacket, G::LastUserCmd = pCmd;

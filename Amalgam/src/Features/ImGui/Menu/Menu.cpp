@@ -1,6 +1,7 @@
 #include "Menu.h"
 
 #include "Components.h"
+#include "../../../SDK/VarsAutoPeek.h"
 #include "../../../SDK/VarsMelee.h"
 #include "../../PacketManip/PacketBuffer/PacketBuffer.h"
 #include "../Notifications/Notifications.h"
@@ -765,6 +766,13 @@ void CMenu::MenuHVH(int iTab)
 				if (Section("Auto Peek", 8))
 				{
 					FToggle(Vars::AutoPeek::Enabled);
+					FToggle(Vars::AutoPeek::FakePeek, FToggleEnum::Left);
+					FToggle(Vars::AutoPeek::WarpBack, FToggleEnum::Right);
+					PushTransparent(!Vars::AutoPeek::FakePeek.Value);
+					{
+						FSlider(Vars::AutoPeek::FakePeekWindow);
+					}
+					PopTransparent();
 				} EndSection();
 				if (Section("Speedhack", 8))
 				{
