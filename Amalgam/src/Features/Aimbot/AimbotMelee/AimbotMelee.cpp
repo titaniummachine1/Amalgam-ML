@@ -34,6 +34,9 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 	const Vec3 vLocalPos = F::Ticks.GetShootPos();
 	const Vec3 vLocalAngles = I::EngineClient->GetViewAngles();
 
+	// Rage killaura: no FOV culling anywhere below, hittability decides.
+	const bool bRage = Vars::Aimbot::Melee::Rage.Value;
+
 	if (Vars::Aimbot::General::Target.Value & Vars::Aimbot::General::TargetEnum::Players)
 	{
 		auto eGroup = !SDK::FriendlyFire() || Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Team ? EntityEnum::PlayerEnemy : EntityEnum::PlayerAll;
@@ -47,7 +50,7 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 				continue;
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.PlayerBoneInFOV(pEntity->As<CTFPlayer>(), vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
+			if (!F::AimbotGlobal.PlayerBoneInFOV(pEntity->As<CTFPlayer>(), vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo) && !bRage)
 				continue;
 
 			float flDistTo = vLocalPos.DistToSqr(vPos);
@@ -76,7 +79,7 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 				continue;
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
+			if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo) && !bRage)
 				continue;
 
 			int iPriority = 0;
@@ -107,7 +110,7 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 				continue;
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
+			if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo) && !bRage)
 				continue;
 
 			float flDistTo = vLocalPos.DistToSqr(vPos);
@@ -400,14 +403,22 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 	CTraceFilterHitscan filter = {};
 	filter.pSkip = pLocal;
 
+	const Vec3 vSelectAngle = tTarget.m_vAngleTo; // selection (bone) angle, pre-clamp
 	for (auto pRecord : vRecords)
 	{
-		// possibly account melee bounds as well?
-		tTarget.m_vPos = m_vEyePos.Clamp(pRecord->m_vOrigin + pRecord->m_vMins, pRecord->m_vOrigin + pRecord->m_vMaxs);
+		// Closest point on the target AABB to our eye. Point-blank (eye
+		// inside the box) degenerates to a zero-vector angle: keep the
+		// selection bone pos instead. Knife keeps center x/y: backstab
+		// detection needs center-based angles, that path is untouched.
+		const Vec3 vClamp = m_vEyePos.Clamp(pRecord->m_vOrigin + pRecord->m_vMins, pRecord->m_vOrigin + pRecord->m_vMaxs);
+		if (vClamp.DistToSqr(m_vEyePos) >= 1.f)
+			tTarget.m_vPos = vClamp;
 		if (Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID() == TF_WEAPON_KNIFE)
 			tTarget.m_vPos.x = pRecord->m_vOrigin.x, tTarget.m_vPos.y = pRecord->m_vOrigin.y;
 		Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(m_vEyePos, tTarget.m_vPos), tTarget.m_vAngleTo);
-		if (!F::AimbotGlobal.ShouldAimAtAngle(tTarget.m_vAngleTo))
+		// Gate on the selection angle: the clamp point on steep geometry can
+		// sit outside AimFOV while the target is hittable. Rage skips it.
+		if (!Vars::Aimbot::Melee::Rage.Value && !F::AimbotGlobal.ShouldAimAtAngle(vSelectAngle))
 			continue;
 
 		Vec3 vRestoreOrigin = tTarget.m_pEntity->GetAbsOrigin();
@@ -669,7 +680,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 	if (F::AimbotGlobal.ShouldHoldAttack(pWeapon))
 		pCmd->buttons |= IN_ATTACK;
 	if (!Vars::Aimbot::General::AimType.Value
-		|| !F::AimbotGlobal.ShouldAim() && pWeapon->m_flSmackTime() < 0.f)
+		|| !Vars::Aimbot::Melee::Rage.Value && !F::AimbotGlobal.ShouldAim() && pWeapon->m_flSmackTime() < 0.f)
 		return;
 
 	if (RunSapper(pLocal, pWeapon, pCmd))

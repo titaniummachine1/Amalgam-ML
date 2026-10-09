@@ -116,5 +116,6 @@ MAKE_HOOK(CHLClient_CreateMove, U::Memory.GetVirtual(I::Client, 21), void,
 		*pSendPacket = true; // force-send requests (charge reach, warp): applied after all choke decisions
 	G::SendPacket = false;
 	F::PacketBuffer.Snapshot(pCmd, *pSendPacket);
+	F::PacketBuffer.Release(pCmd, *pSendPacket);
 	G::Choking = !*pSendPacket, G::LastUserCmd = pCmd;
 }

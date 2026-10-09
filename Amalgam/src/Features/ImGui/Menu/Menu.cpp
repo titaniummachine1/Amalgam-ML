@@ -2,6 +2,7 @@
 
 #include "Components.h"
 #include "../../../SDK/VarsMelee.h"
+#include "../../PacketManip/PacketBuffer/PacketBuffer.h"
 #include "../Notifications/Notifications.h"
 #include "../../Configs/Configs.h"
 #include "../../Binds/Binds.h"
@@ -418,6 +419,7 @@ void CMenu::MenuAimbot(int iTab)
 					FToggle(Vars::Aimbot::Melee::WhipTeam, FToggleEnum::Right);
 					FToggle(Vars::Aimbot::Melee::ChargeReach, FToggleEnum::Left);
 					FDropdown(Vars::Aimbot::Melee::ChargeTiming);
+					FToggle(Vars::Aimbot::Melee::Rage, FToggleEnum::Left);
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{
@@ -745,6 +747,7 @@ void CMenu::MenuHVH(int iTab)
 					PopTransparent();
 					FToggle(Vars::Fakelag::UnchokeOnAttack, FToggleEnum::Left);
 					FToggle(Vars::Fakelag::RetainBlastJump, FToggleEnum::Right);
+					FToggle(Vars::Packet::FakeDuck, FToggleEnum::Left);
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{

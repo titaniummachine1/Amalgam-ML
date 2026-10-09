@@ -24,10 +24,23 @@ class CPacketBuffer
 private:
 	BufferedCmd_t m_tCmds[MULTIPLAYER_BACKUP] = {};
 	int m_iChokedRun = 0;
+	int m_iRunStart = 0;
 
 public:
 	void Snapshot(CUserCmd* pCmd, bool bSendPacket);
+	// Slice 2: rewrite the engine's queued cmds for the released run (see
+	// .cpp). Called at CreateMove end on release ticks; the engine transmits
+	// later this frame.
+	void Release(CUserCmd* pCmd, bool bSendPacket);
 	const BufferedCmd_t* Get(int iCommandNumber) const;
 };
+
+// Packet-domain options live with the packet module (NOT Vars.h): editing
+// here recompiles ~4 files instead of the world.
+namespace Vars {
+	NAMESPACE_BEGIN(Packet)
+		CVar(FakeDuck, "Fake duck", false);
+	NAMESPACE_END(Packet)
+}
 
 ADD_FEATURE(CPacketBuffer, PacketBuffer);
