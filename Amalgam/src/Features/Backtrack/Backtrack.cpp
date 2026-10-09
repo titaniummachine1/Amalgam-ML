@@ -176,8 +176,8 @@ std::vector<TickRecord*> CBacktrack::GetValidRecords(std::vector<TickRecord*>& v
 			if (pRecord->m_bInvalid)
 				continue;
 
-			float flDelta = flCorrect - TICKS_TO_TIME(iServerTick - TIME_TO_TICKS(pRecord->m_flSimTime));
-			if (fabsf(flDelta) > flMinDelta)
+			float flDelta = fabsf(flCorrect - TICKS_TO_TIME(iServerTick - TIME_TO_TICKS(pRecord->m_flSimTime)));
+			if (flDelta > flMinDelta)
 				continue;
 
 			flMinDelta = flDelta;

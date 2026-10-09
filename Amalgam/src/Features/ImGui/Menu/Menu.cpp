@@ -198,7 +198,7 @@ void CMenu::MenuAimbot(int iTab)
 				}
 				if (Section("Backtrack", 8))
 				{
-					FSlider(Vars::Backtrack::Window); FTooltip("How far back in time valid records go. Wider catches fakelag, narrower never touches ghosts.");
+					FSlider(Vars::Backtrack::Window); FTooltip("Half-width around the auto-followed band (latency + interp). The band itself slides: with fake latency it sits near 1s, so this 200ms half-width already covers 1s-deep records. Wider would only admit records the server rejects.");
 					FSlider(Vars::Backtrack::Latency); FTooltip("Fake latency via sequence shift: bigger window, but the scoreboard shows it. Zero hides everything.");
 					FSlider(Vars::Backtrack::Interp); FTooltip("Fake interp, same deal as latency, smaller. Zero hides everything.");
 					FToggle(Vars::Backtrack::PreferOnShot, FToggleEnum::Left); FTooltip("Prefer records where the enemy shot: real poses, beats resolver-bait.");
