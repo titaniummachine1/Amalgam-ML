@@ -669,6 +669,18 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		m_iChargeTarget = -1;
 	}
 
+	// Tail compression: swing already in flight with a long smack delay. The
+	// head played in normal time (or via coverage hold); once the remaining
+	// delay fits the available dump, shift through the tail so the smack
+	// lands instantly. Self-limiting: the dump consumes the bank below the
+	// condition. Skips trivial tails; Doubletap() validates downstream.
+	if (pWeapon->m_flSmackTime() > 0.f)
+	{
+		const int iTicksToSmack = TIME_TO_TICKS(std::max(pWeapon->m_flSmackTime() - I::GlobalVars->curtime, 0.f));
+		if (iTicksToSmack >= 2 && iTicksToSmack <= F::Ticks.GetTicks(pWeapon))
+			F::Ticks.m_bDoubletap = true;
+	}
+
 	static int iStaticAimType = Vars::Aimbot::General::AimType.Value;
 	const int iLastAimType = iStaticAimType;
 	const int iRealAimType = Vars::Aimbot::General::AimType.Value;
@@ -751,12 +763,29 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 
 		if (Vars::Aimbot::General::AutoShoot.Value && pWeapon->m_flSmackTime() < 0.f)
 		{
-			if (m_bShouldSwing)
+			// Instant damage needs the bank to span the whole smack delay.
+			// Partial bank: hold the swing while fakelag banks up (max ~15
+			// ticks), then fire anyway so strafers aren't missed. Empty bank
+			// or full coverage: fire immediately (normal / instant swing).
+			const int iBank = F::Ticks.m_iShiftedTicks;
+			const bool bCover = iBank >= m_iSwingTicks;
+			bool bPress = m_bShouldSwing || bCover;
+			if (bPress && !bCover && iBank > 0)
+			{
+				if (!m_iSwingHoldTick)
+					m_iSwingHoldTick = I::GlobalVars->tickcount;
+				if (I::GlobalVars->tickcount - m_iSwingHoldTick <= 15)
+					bPress = false;
+				else
+					m_iSwingHoldTick = 0;
+			}
+			else
+				m_iSwingHoldTick = 0;
+			if (bPress)
 				pCmd->buttons |= IN_ATTACK;
 			// Orchestrated dump: on the exact charge-press tick (Charge state)
 			// ride the shift when banked so swing+charge go out together;
-			// force-send covers the unbanked case. Uncoordinated shifts stay
-			// banned by the Ticks guards while busy.
+			// force-send covers the unbanked case.
 			if (m_iDoubletapTicks && (!IsChargeBusy() || m_eChargeState == ChargeState::Charge))
 				F::Ticks.m_bDoubletap = true;
 		}

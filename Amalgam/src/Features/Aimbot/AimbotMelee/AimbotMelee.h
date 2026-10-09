@@ -29,6 +29,9 @@ private:
 	ChargeState m_eChargeState = ChargeState::Idle;
 	int m_iChargeTicks = 0;
 	int m_iChargeTarget = -1;
+	// Coverage hold: tickcount when holding the swing for bank completion
+	// (0 = not holding). Instant damage needs bank >= smack delay.
+	int m_iSwingHoldTick = 0;
 	// Smack-countdown jump detector: last observed smack time + countdown.
 	// A drop >1 between observations means compressed time (warp/DT dump),
 	// and any precise window would fire late -> press now instead.
