@@ -521,11 +521,14 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 	if (m_bCommitting || (bAssist && m_bHasBest))
 		PlantMoves(pLocal, pCmd, m_vBestDir);
 	// Commit claim: scored best + live re-test at the hit state + not
-	// currently stabbing + >= 3 points + bank covers exact length. Generic
-	// warp driver excluded (one goal field — exact length wins, documented).
+	// currently stabbing + >= 3 points + bank covers exact length.
+	// Notably NOT gated on: generic Warp.Value (Warp() yields to the commit
+	// latch, so they share the goal field without fighting) or m_bRecharge
+	// (the commit flag suppresses recharge; blocking mid-top-up refused
+	// funded claims). m_bWarp overlap and DT/speedhack still exclude.
 	if (!m_bCommitting && m_bBestHittable && m_iMinTicks > 0
-		&& !Vars::Doubletap::Warp.Value && !F::Ticks.m_bWarp
-		&& !F::Ticks.m_bDoubletap && !F::Ticks.m_bRecharge && !F::Ticks.m_bSpeedhack
+		&& !F::Ticks.m_bWarp
+		&& !F::Ticks.m_bDoubletap && !F::Ticks.m_bSpeedhack
 		&& m_iTotalPoints >= 3 && iBank >= m_iMinTicks)
 	{
 		const int iHit = (iBest >= 0) ? iBest : 0;

@@ -1,5 +1,6 @@
 #include "Ticks.h"
 #include "../../SDK/VarsMelee.h"
+#include "../Aimbot/AimbotMelee/AutoTrickstab.h"
 
 #include "../PacketManip/AntiAim/AntiAim.h"
 #include "../EnginePrediction/EnginePrediction.h"
@@ -45,6 +46,13 @@ void CTicks::Recharge(CTFPlayer* pLocal)
 void CTicks::Warp()
 {
 	if (!m_bGoalReached)
+		return;
+
+	// Trickstab owns m_bWarp + the goal while committing: hands off, exact
+	// length wins. Safe: the claim requires !m_bWarp, so the generic driver
+	// is never mid-flight when the latch sets; the claim's own goal math
+	// mirrors this function's, just with the scored length.
+	if (F::AutoTrickstab.IsCommitting())
 		return;
 
 	m_bWarp = false;
