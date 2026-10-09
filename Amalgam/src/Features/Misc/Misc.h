@@ -8,7 +8,6 @@ private:
 	void AutoJumpbug(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void AutoFaNJump(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void AutoRevJump(CTFPlayer* pLocal, CUserCmd* pCmd);
-	void AutoStrafe(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void AirDuck(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void MovementLock(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void BreakJump(CTFPlayer* pLocal, CUserCmd* pCmd);
@@ -33,6 +32,7 @@ private:
 public:
 	void RunPre(CTFPlayer* pLocal, CUserCmd* pCmd);
 	void RunPost(CTFPlayer* pLocal, CUserCmd* pCmd);
+	void AutoStrafe(CTFPlayer* pLocal, CUserCmd* pCmd);
 
 	void Event(IGameEvent* pEvent, uint32_t uNameHash);
 	int AntiBackstab(CTFPlayer* pLocal, CUserCmd* pCmd, bool bSendPacket);

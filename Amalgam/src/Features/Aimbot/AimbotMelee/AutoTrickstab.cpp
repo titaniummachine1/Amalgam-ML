@@ -1,29 +1,45 @@
 #include "AutoTrickstab.h"
 
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
+#include "../../Ticks/Ticks.h"
+#include "../../Misc/Misc.h"
 #include "../../../SDK/VarsMelee.h"
 
-// LUT-faithful port of Auto_Trickstab (qawe) direction logic; SIMULATION is
-// Amalgam engine (MoveSim) instead of Lua math. Deliberate deviations (all
-// noted): hull radii for hitbox radii (mapped fields), no TARGET_EXTENSION /
-// coast pass (engine integrates internally), no manual A/D side override or
-// yaw-delta side preference (movement-commitment phase), no TF2.* constant
-// table (live sv_* via engine), trace target is GetCenter (not per-point
-// clamp; scoring only, the stab itself still aims clamp-point via aimbot).
-#define TRICKSTAB_RANGE_GATE 600.f
-#define TRICKSTAB_HORIZON_MIN 8
-#define TRICKSTAB_HORIZON_MAX 24
+// Verbatim Lua constants (Auto_Trickstab TF2 table).
+#define TRICKSTAB_SCORE_DIST 120.f
+#define TRICKSTAB_YAW_W 0.7f
+#define TRICKSTAB_DIST_W 0.3f
+#define TRICKSTAB_EXTENSION 450.f
+#define TRICKSTAB_STAIRSTAB_H 82.f
+#define TRICKSTAB_MANUAL_THRESH 100.f
+#define TRICKSTAB_ACQUIRE_RANGE 225.f
+#define TRICKSTAB_MINK_PAD 1.f
 #define TRICKSTAB_DEG2RAD 0.0174532925f
+#define TRICKSTAB_RAD2DEG 57.29578f
+#define TRICKSTAB_MOVE_SPEED 450.f
 
-// Direction -> corner subset LUT, verbatim shape (0-indexed corners:
-// TL,TR,BL,BR at +/-hitbox, [4] = center; -1 pads short rows).
-static const int TRICKSTAB_LUT[3][3][3] = {
-	{ {4,3,0}, {4,3,1}, {4,2,1} },
-	{ {4,1,0}, {4,-1,-1}, {4,2,3} },
-	{ {4,1,2}, {4,0,2}, {4,0,3} },
-};
+// Yaw from vFrom to vTo, degrees.
+static float TrickstabYaw(const Vec3& vFrom, const Vec3& vTo)
+{
+	return atan2f(vTo.y - vFrom.y, vTo.x - vFrom.x) * TRICKSTAB_RAD2DEG;
+}
 
-bool CAutoTrickstab::SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, const Vec3& vTargetPos, float flHitbox, DirResult_t& tOut)
+static float TrickstabNorm(float flAngle)
+{
+	while (flAngle > 180.f) flAngle -= 360.f;
+	while (flAngle < -180.f) flAngle += 360.f;
+	return flAngle;
+}
+
+// Lua CheckYawDelta, exact: strict inequalities, excludes 0.
+static bool TrickstabYawDelta(float flA, float flB)
+{
+	const float flD = TrickstabNorm(flA - flB);
+	return (flD > 0.f && flD < 90.f - 1.f)
+		|| (flD < 0.f && flD > -(90.f - 1.f));
+}
+
+bool CAutoTrickstab::SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, const Vec3& vLeadPos, const Vec3& vOMin, const Vec3& vOMax, const Vec3& vTMin, const Vec3& vTMax, DirResult_t& tOut)
 {
 	tOut = DirResult_t();
 	if (!pLocal || iTicks <= 0)
@@ -38,22 +54,22 @@ bool CAutoTrickstab::SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, const
 	}
 	auto& mv = tStorage.m_MoveData;
 	mv.m_vecViewAngles = { 0.f, flYawDeg, 0.f };
-	mv.m_flForwardMove = 450.f;
+	mv.m_flForwardMove = TRICKSTAB_MOVE_SPEED;
 	mv.m_flSideMove = 0.f;
 	mv.m_flUpMove = 0.f;
+	// Exact Minkowski contact break (their box absorbs both bodies, live
+	// hulls): strict inside = collide. Touching faces = free.
+	const Vec3 vEMin = vLeadPos + (vTMin - vOMax);
+	const Vec3 vEMax = vLeadPos + (vTMax - vOMin);
 	for (int i = 0; i < iTicks; i++)
 	{
 		if (tStorage.m_bFailed)
 			break;
 		F::MoveSim.RunTick(tStorage);
-		// Player contact (Lua-faithful break): stop AT the opponent, never
-		// through. 2D only: head-standing stays legal. Combined radii is the
-		// padding so warp skirts without touching (this is what the LUT
-		// padding is FOR: 1u per side, 2u total). Engine PM collides too;
-		// this is the deterministic backstop either way.
-		Vec3 vD = mv.m_vecAbsOrigin - vTargetPos;
-		vD.z = 0.f;
-		if (vD.Length() < flHitbox)
+		const Vec3& vP = mv.m_vecAbsOrigin;
+		if (vP.x > vEMin.x && vP.x < vEMax.x
+			&& vP.y > vEMin.y && vP.y < vEMax.y
+			&& vP.z > vEMin.z && vP.z < vEMax.z)
 			break;
 	}
 	tOut.vEnd = mv.m_vecAbsOrigin;
@@ -63,70 +79,173 @@ bool CAutoTrickstab::SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, const
 	return tOut.bValid;
 }
 
-int CAutoTrickstab::ScorePath(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CTFPlayer* pTarget, const Vec3& vLeadPos, const std::vector<Vec3>& vPath, Vec3& vHitPosOut, int& iHitCountOut)
+bool CAutoTrickstab::ResolveNeutral(CTFPlayer* pLocal, int iTicks, Vec3& vOut)
 {
-	float flRange = SDK::AttribHookValue(pWeapon->GetSwingRange(), "melee_range_multiplier", pWeapon);
-	if (pLocal->m_flModelScale() > 1.0f)
-		flRange *= pLocal->m_flModelScale();
-	const float flHull = SDK::AttribHookValue(18, "melee_bounds_multiplier", pWeapon);
-	const Vec3 vSwingMins = { -flHull, -flHull, -flHull };
-	const Vec3 vSwingMaxs = { flHull, flHull, flHull };
-	// Lead AABB + their eye (their viewpos). Deviations from Lua noted:
-	// MASK_SOLID matches OUR swing detection (theirs SHOT_HULL); live hulls
-	// (duck-aware) for their fixed HULL.
-	const Vec3 vBoxMins = vLeadPos + pTarget->m_vecMins();
-	const Vec3 vBoxMaxs = vLeadPos + pTarget->m_vecMaxs();
-	const Vec3 vEnemyView = vLeadPos + pTarget->m_vecViewOffset();
-	const float flEnemyYaw = H::Entities.GetEyeAngles(pTarget->entindex()).y;
-	CTraceFilterHitscan filter = {};
-	filter.pSkip = pLocal;
-	iHitCountOut = 0;
-	int iFirst = -1;
-	for (size_t k = 0; k < vPath.size(); k++)
+	vOut = pLocal->m_vecOrigin();
+	if (!pLocal || iTicks <= 0)
+		return false;
+	MoveStorage tStorage = {};
+	if (!F::MoveSim.Initialize(pLocal, tStorage, false, false, false))
 	{
-		const Vec3 vEye = vPath[k] + pLocal->m_vecViewOffset();
-		// Closest point on the target AABB to our eye.
-		const Vec3 vClosest = {
-			vEye.x < vBoxMins.x ? vBoxMins.x : (vEye.x > vBoxMaxs.x ? vBoxMaxs.x : vEye.x),
-			vEye.y < vBoxMins.y ? vBoxMins.y : (vEye.y > vBoxMaxs.y ? vBoxMaxs.y : vEye.y),
-			vEye.z < vBoxMins.z ? vBoxMins.z : (vEye.z > vBoxMaxs.z ? vBoxMaxs.z : vEye.z) };
-		// BACKSTAB_RANGE sphere (66, theirs) + our swing range (delivery).
-		const float flDist = (vEye - vClosest).Length();
-		if (flDist > 66.f || flDist > flRange)
-			continue;
-		// Yaw delta, theirs exact: < BACKSTAB_ANGLE-1 (89) = behind.
-		const float flSpyYaw = atan2f(vEye.y - vEnemyView.y, vEye.x - vEnemyView.x) * 57.29578f;
-		float flDelta = flSpyYaw - flEnemyYaw;
-		while (flDelta > 180.f) flDelta -= 360.f;
-		while (flDelta < -180.f) flDelta += 360.f;
-		if (fabsf(flDelta) >= 89.f)
-			continue;
-		// LOS last: hull trace toward the closest point, must hit them.
-		const float flLen = (vClosest - vEye).Length();
-		const Vec3 vDir = (flLen > 0.001f) ? (vClosest - vEye) * (1.f / flLen) : Vec3(1.f, 0.f, 0.f);
-		CGameTrace trace = {};
-		SDK::TraceHull(vEye, vEye + vDir * 66.f, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
-		if (trace.m_pEnt && trace.m_pEnt == pTarget)
-		{
-			if (iFirst < 0) { iFirst = (int)k; vHitPosOut = vPath[k]; }
-			iHitCountOut++;
-		}
+		F::MoveSim.Restore(tStorage);
+		return false;
 	}
-	return iFirst;
+	// Zero input: init may seed moves from stored records, which is exactly
+	// what "no input" is not. View kept (irrelevant with zero moves).
+	auto& mv = tStorage.m_MoveData;
+	mv.m_flForwardMove = 0.f;
+	mv.m_flSideMove = 0.f;
+	mv.m_flUpMove = 0.f;
+	for (int i = 0; i < iTicks; i++)
+	{
+		if (tStorage.m_bFailed)
+			break;
+		F::MoveSim.RunTick(tStorage);
+	}
+	vOut = mv.m_vecAbsOrigin;
+	const bool bOk = !tStorage.m_bFailed;
+	F::MoveSim.Restore(tStorage);
+	return bOk;
 }
 
-void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
+float CAutoTrickstab::Wishdir(const Vec3& vResolved, const Vec3& vMyPos, const Vec3& vLeadPos, const Vec3& vCorner)
+{
+	// Extension direction from live pos (arrival must stay impossible).
+	Vec3 vTo = (vLeadPos + vCorner) - vMyPos;
+	vTo.z = 0.f;
+	const float flToLen = vTo.Length2D();
+	const Vec3 vExt = (flToLen > 1.f) ? vTo * (1.f / flToLen) : Vec3(1.f, 0.f, 0.f);
+	const Vec3 vD = (vLeadPos + vCorner) + vExt * TRICKSTAB_EXTENSION;
+	// Residual from the RESOLVED state, steered from live pos unrotated.
+	const Vec3 vR = vD - vResolved;
+	if (vR.Length2D() < 1.f)
+		return TrickstabYaw(vMyPos, vLeadPos + vCorner);
+	return atan2f(vR.y, vR.x) * TRICKSTAB_RAD2DEG;
+}
+
+// Pure aimbot-unified gates (CanBackstab dot core + CanHit range/LOS
+// decomposition, live weapon range). No prediction, no side effects — the
+// firing path stays the authority, this is its scoring twin.
+bool CAutoTrickstab::StabAt(const Vec3& vSimEye, const Vec3& vFoePos, const Vec3& vFoeEye, float flFoeYaw, float flOwnerYaw, float flRange, const Vec3& vSwingMins, const Vec3& vSwingMaxs, CTFPlayer* pLocal, CTFPlayer* pTarget)
+{
+	// Dot core, verbatim thresholds (CanBackstab).
+	Vec3 vToTarget = (vFoePos - vSimEye).To2D();
+	const float flDist = vToTarget.Normalize();
+	if (flDist < 0.2974f) // sqrt(0.0884): inside them, no meaningful angle
+		return false;
+	const float flCompDist = PLAYER_ORIGIN_COMPRESSION / 2;
+	const float flExtra = 2.f * flCompDist / flDist;
+	Vec3 vOwnerF, vFoeF;
+	Math::AngleVectors({ 0.f, flOwnerYaw, 0.f }, &vOwnerF);
+	Math::AngleVectors({ 0.f, flFoeYaw, 0.f }, &vFoeF);
+	vOwnerF.Normalize2D();
+	vFoeF.Normalize2D();
+	if (!(vToTarget.Dot(vFoeF) > 0.f + 0.0031f + flExtra)) // behind them?
+		return false;
+	if (!(vToTarget.Dot(vOwnerF) > 0.5f + flExtra)) // facing them?
+		return false;
+	if (!(vFoeF.Dot(vOwnerF) > -0.3f + 0.0031f)) // facestab guard
+		return false;
+	// Range + LOS (CanHit decomposition, live range/hull).
+	const Vec3 vBoxMins = vFoePos + pTarget->m_vecMins();
+	const Vec3 vBoxMaxs = vFoePos + pTarget->m_vecMaxs();
+	const Vec3 vClosest = {
+		vSimEye.x < vBoxMins.x ? vBoxMins.x : (vSimEye.x > vBoxMaxs.x ? vBoxMaxs.x : vSimEye.x),
+		vSimEye.y < vBoxMins.y ? vBoxMins.y : (vSimEye.y > vBoxMaxs.y ? vBoxMaxs.y : vSimEye.y),
+		vSimEye.z < vBoxMins.z ? vBoxMins.z : (vSimEye.z > vBoxMaxs.z ? vBoxMaxs.z : vSimEye.z) };
+	if ((vSimEye - vClosest).Length() > flRange)
+		return false;
+	const float flLen = (vClosest - vSimEye).Length();
+	const Vec3 vDir = (flLen > 0.001f) ? (vClosest - vSimEye) * (1.f / flLen) : Vec3(1.f, 0.f, 0.f);
+	CTraceFilterHitscan filter = {};
+	filter.pSkip = pLocal;
+	CGameTrace trace = {};
+	SDK::TraceHull(vSimEye, vSimEye + vDir * flRange, {}, {}, MASK_SOLID, &filter, &trace);
+	if (trace.fraction < 1.f && trace.m_pEnt != pTarget)
+	{
+		SDK::TraceHull(vSimEye, vSimEye + vDir * flRange, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
+		if (trace.m_pEnt != pTarget)
+			return false;
+	}
+	return true;
+}
+
+float CAutoTrickstab::ScorePath(CTFPlayer* pLocal, CTFPlayer* pTarget, const std::vector<Vec3>& vPath, const std::vector<Vec3>& vFoePath, const Vec3& vLeadEye, float flFoeYaw, float flOwnerYaw, float flRange, const Vec3& vSwingMins, const Vec3& vSwingMaxs, Vec3& vHitPosOut, Vec3& vHitEyeOut, Vec3& vHitFoeOut, int& iHitTickOut, int& iHitCountOut)
+{
+	float flBest = -1.f;
+	vHitPosOut = {};
+	vHitEyeOut = {};
+	vHitFoeOut = {};
+	iHitTickOut = -1;
+	iHitCountOut = 0;
+	const Vec3 vLocalEye = pLocal->m_vecViewOffset();
+	const Vec3 vFoeEyeOff = pTarget->m_vecViewOffset();
+	for (size_t k = 0; k < vPath.size(); k++)
+	{
+		const Vec3 vEye = vPath[k] + vLocalEye;
+		// Dual prediction: test against the enemy's pose THIS tick.
+		const Vec3 vFoe = (k < vFoePath.size()) ? vFoePath[k] : vPath[k];
+		const Vec3 vFoeEye = vFoe + vFoeEyeOff;
+		if (!StabAt(vEye, vFoe, vFoeEye, flFoeYaw, flOwnerYaw, flRange, vSwingMins, vSwingMaxs, pLocal, pTarget))
+			continue;
+		iHitCountOut++;
+		// Lua ranking: eye-anchored yaw + feet distance, tie -> earlier.
+		// (Direction fixed: sim -> enemy vs facing, ~0 behind. The old code
+		// measured enemy -> sim, which reads 180 behind and never scored.)
+		const float flSpyYaw = TrickstabYaw(vEye, vLeadEye);
+		const float flYawDiff = fabsf(TrickstabNorm(flSpyYaw - flFoeYaw));
+		const float flYawComp = std::max(0.f, 1.f - flYawDiff / 90.f);
+		const float flDistComp = std::max(0.f, 1.f - (vPath[k] - vFoe).Length() / TRICKSTAB_SCORE_DIST);
+		const float flScore = TRICKSTAB_YAW_W * flYawComp + TRICKSTAB_DIST_W * flDistComp;
+		if (flScore > flBest + 1e-6f || (fabsf(flScore - flBest) <= 1e-6f && (int)k < iHitTickOut))
+		{
+			flBest = flScore;
+			vHitPosOut = vPath[k];
+			vHitEyeOut = vEye;
+			vHitFoeOut = vFoe;
+			iHitTickOut = (int)k;
+		}
+	}
+	return flBest;
+}
+
+void CAutoTrickstab::PlantMoves(CTFPlayer* pLocal, CUserCmd* pCmd, const Vec3& vWishDir)
+{
+	if (!pLocal || !pCmd)
+		return;
+	// World wishdir -> view-relative moves. View itself is NEVER touched
+	// (R3): decompose against the final angles so content stays consistent
+	// no matter who wrote the angles before us. AntiAim is frozen during
+	// commit ticks, so plant == execution there; during assist its rate
+	// bounds any wobble.
+	const float flYaw = pCmd->viewangles.y * TRICKSTAB_DEG2RAD;
+	const float flC = cosf(flYaw), flS = sinf(flYaw);
+	const float flFwd = vWishDir.x * flC + vWishDir.y * flS;
+	const float flSide = vWishDir.x * flS - vWishDir.y * flC;
+	pCmd->forwardmove = std::clamp(flFwd * TRICKSTAB_MOVE_SPEED, -TRICKSTAB_MOVE_SPEED, TRICKSTAB_MOVE_SPEED);
+	pCmd->sidemove = std::clamp(flSide * TRICKSTAB_MOVE_SPEED, -TRICKSTAB_MOVE_SPEED, TRICKSTAB_MOVE_SPEED);
+	pCmd->buttons |= IN_FORWARD;
+	// R1: enabled strafe is USED. Legit needs mouse delta (absent on planted
+	// ticks, no-ops itself); Directional converts our plant to optimal air
+	// strafe; grounded it returns early. Jump state left alone (air duck
+	// untouched, R2).
+	if (Vars::Misc::Movement::AutoStrafe.Value != Vars::Misc::Movement::AutoStrafeEnum::Off)
+		F::Misc.AutoStrafe(pLocal, pCmd);
+}
+
+void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
 	m_bHasBest = false;
 	m_bBestHittable = false;
-	if (!Vars::Aimbot::Melee::AutoTrickstab.Value || !pLocal || !pWeapon)
+	m_iTotalPoints = 0;
+	m_iMinTicks = -1;
+	if (!Vars::Aimbot::Melee::AutoTrickstab.Value || !pLocal || !pWeapon || !pCmd)
 		return;
 	if (pWeapon->GetWeaponID() != TF_WEAPON_KNIFE)
 		return;
 	if (!pLocal->IsAlive())
 		return;
-	// Nearest live enemy player (frozen-world assumption: evaluated once).
-	// Beyond warp-relevant range the fan is pointless: skip all sims.
+	// Nearest live enemy inside acquisition range (Lua: 225).
 	CTFPlayer* pTarget = nullptr;
 	float flBest = std::numeric_limits<float>::max();
 	for (auto pEntity : H::Entities.GetGroup(EntityEnum::PlayerEnemy))
@@ -143,87 +262,274 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 			pTarget = pEnemy;
 		}
 	}
-	if (!pTarget || flBest > TRICKSTAB_RANGE_GATE * TRICKSTAB_RANGE_GATE)
+	if (!pTarget || flBest > TRICKSTAB_ACQUIRE_RANGE * TRICKSTAB_ACQUIRE_RANGE)
 		return;
-	// Lag-compensated target pos (half ping * velocity), like the reference:
-	// the warp transmits across latency, score where they'll be, not are.
-	Vec3 vLead = pTarget->m_vecOrigin();
-	if (auto pNetChan = I::EngineClient->GetNetChannelInfo())
+	// Razorback: the firing path refuses, so the sim refuses once, not per tick.
+	if (Vars::Aimbot::Melee::IgnoreRazorback.Value)
 	{
-		const float flLeadT = (std::max(pNetChan->GetLatency(FLOW_OUTGOING), 0.f) + std::max(pNetChan->GetLatency(FLOW_INCOMING), 0.f)) * 0.5f;
-		vLead = vLead + pTarget->m_vecVelocity() * flLeadT;
-	}
-	// Relative quadrant (verbatim: 1u buffer, vertical gate zeroes it) then
-	// the corner subset LUT. Corners at +-combined hull radii, world axes.
-	const float flHitbox = pLocal->m_vecMaxs().x + pTarget->m_vecMaxs().x;
-	const float flVertRange = pTarget->m_vecMaxs().z - pTarget->m_vecMins().z;
-	const Vec3 vMy = pLocal->m_vecOrigin();
-	const float flDx = vLead.x - vMy.x, flDy = vLead.y - vMy.y, flDz = vLead.z - vMy.z;
-	const int iVert = (fabsf(flDz) > flVertRange) ? 1 : 0;
-	const int iQx = (((flDx > flHitbox - 1.f) ? 1 : 0) - ((flDx < -flHitbox + 1.f) ? 1 : 0)) * (1 - iVert);
-	const int iQy = (((flDy > flHitbox - 1.f) ? 1 : 0) - ((flDy < -flHitbox + 1.f) ? 1 : 0)) * (1 - iVert);
-	const Vec3 vCorners[5] = {
-		{ -flHitbox, flHitbox, 0.f }, { flHitbox, flHitbox, 0.f },
-		{ -flHitbox, -flHitbox, 0.f }, { flHitbox, -flHitbox, 0.f },
-		{ 0.f, 0.f, 0.f } };
-	const Vec3 vTargetCenter = pTarget->GetCenter();
-	const int iTicks = std::clamp(Vars::Doubletap::TickLimit.Value, TRICKSTAB_HORIZON_MIN, TRICKSTAB_HORIZON_MAX);
-	DirResult_t aRes[3] = {};
-	int iDirs = 0;
-	for (int k = 0; k < 3; k++)
-	{
-		const int iCorner = TRICKSTAB_LUT[iQx + 1][iQy + 1][k];
-		if (iCorner < 0 || iCorner > 4)
-			break;
-		const Vec3 vPoint = vLead + vCorners[iCorner];
-		const float flYaw = atan2f(vPoint.y - vMy.y, vPoint.x - vMy.x) * 57.29578f;
-		if (!SimDir(pLocal, flYaw, iTicks, pTarget->m_vecOrigin(), flHitbox, aRes[iDirs]))
-			continue;
-		aRes[iDirs].iHitTick = ScorePath(pLocal, pWeapon, pTarget, vLead, aRes[iDirs].vPath, aRes[iDirs].vHitPos, aRes[iDirs].iHitCount);
-		aRes[iDirs].bHittable = aRes[iDirs].iHitTick >= 0;
-		aRes[iDirs].flScore = aRes[iDirs].bHittable
-			? (vTargetCenter - aRes[iDirs].vHitPos).Length()
-			: (pTarget->m_vecOrigin() - aRes[iDirs].vEnd).Length();
-		iDirs++;
-	}
-	if (!iDirs)
-		return;
-	// Best: earliest hittable tick, then nearest; else nearest end overall.
-	int iBest = -1;
-	for (int iPass = 0; iPass < 2 && iBest < 0; iPass++)
-	{
-		int iBestTick = INT_MAX;
-		float flS = std::numeric_limits<float>::max();
-		for (int i = 0; i < iDirs; i++)
+		CUtlVector<CBaseEntity*> itemList;
+		int iBackstabShield = SDK::AttribHookValue(0, "set_blockbackstab_once", pTarget, &itemList);
+		if (iBackstabShield && itemList.Count())
 		{
-			if (!aRes[i].bValid)
-				continue;
-			if (iPass == 0)
+			if (CBaseEntity* pEntity = itemList.Element(0))
 			{
-				if (!aRes[i].bHittable)
-					continue;
-				if (aRes[i].iHitTick < iBestTick || (aRes[i].iHitTick == iBestTick && aRes[i].flScore < flS))
-				{
-					iBestTick = aRes[i].iHitTick;
-					flS = aRes[i].flScore;
-					iBest = i;
-				}
-			}
-			else if (aRes[i].flScore < flS)
-			{
-				flS = aRes[i].flScore;
-				iBest = i;
+				if (pEntity->ShouldDraw())
+					return;
 			}
 		}
 	}
-	if (iBest < 0)
+	// Lead: half ping + choke, the pose the server will judge.
+	Vec3 vLead = pTarget->m_vecOrigin();
+	const Vec3 vFoeVel = pTarget->m_vecVelocity();
+	if (auto pNetChan = I::EngineClient->GetNetChannelInfo())
+	{
+		const float flLeadT = (std::max(pNetChan->GetLatency(FLOW_OUTGOING), 0.f) + std::max(pNetChan->GetLatency(FLOW_INCOMING), 0.f)) * 0.5f
+			+ H::Entities.GetChoke(pTarget->entindex()) * I::GlobalVars->interval_per_tick;
+		vLead = vLead + vFoeVel * flLeadT;
+	}
+	const int iBank = F::Ticks.m_iShiftedTicks;
+	// Live weapon range/hull (CanHit decomposition, R10 unified predicate).
+	float flRange = SDK::AttribHookValue(pWeapon->GetSwingRange(), "melee_range_multiplier", pWeapon);
+	float flHull = SDK::AttribHookValue(18, "melee_bounds_multiplier", pWeapon);
+	if (pLocal->m_flModelScale() > 1.0f)
+	{
+		flRange *= pLocal->m_flModelScale();
+		flHull *= pLocal->m_flModelScale();
+	}
+	const Vec3 vSwingMins = { -flHull, -flHull, -flHull };
+	const Vec3 vSwingMaxs = { flHull, flHull, flHull };
+	const Vec3 vMyPos = pLocal->m_vecOrigin();
+	const Vec3 vLeadEye = vLead + pTarget->m_vecViewOffset();
+	const float flFoeYaw = H::Entities.GetEyeAngles(pTarget->entindex()).y;
+	const float flOwnerYaw = pCmd->viewangles.y;
+	// Minkowski corners: expanded half-extents + 1u graze padding. Standing:
+	// +/-(24+24+1) = +/-49. Exact, duck-aware, rotation-independent.
+	const Vec3 vOMin = pLocal->m_vecMins(), vOMax = pLocal->m_vecMaxs();
+	const Vec3 vTMin = pTarget->m_vecMins(), vTMax = pTarget->m_vecMaxs();
+	const float flHx = vOMax.x + vTMax.x + TRICKSTAB_MINK_PAD;
+	const float flHy = vOMax.y + vTMax.y + TRICKSTAB_MINK_PAD;
+	const Vec3 vCorners[4] = {
+		{ -flHx, flHy, 0.f }, { flHx, flHy, 0.f },
+		{ -flHx, -flHy, 0.f }, { flHx, -flHy, 0.f } };
+	const Vec3 vCenter = {};
+	// Side picker (R7): Manual reads GAME INPUT (cmd sidemove, never keys);
+	// no input falls back to Automatic (closer side to the back, tie right).
+	// Lua code sites agree D-positive = right; the stray comment claiming
+	// the opposite is disregarded in favor of both call sites + SDK.
+	float flLeft = FLT_MAX, flRight = FLT_MAX;
+	for (int i = 0; i < 4; i++)
+	{
+		const float flTestYaw = TrickstabYaw(vLead + vCorners[i], vLead);
+		const float flYawDiff = fabsf(TrickstabNorm(flTestYaw - flFoeYaw));
+		if (vCorners[i].y > 0.f)
+			flRight = std::min(flRight, flYawDiff);
+		else
+			flLeft = std::min(flLeft, flYawDiff);
+	}
+	const float flSideMove = pCmd->sidemove;
+	const bool bManualIn = Vars::Aimbot::Melee::TrickstabSide.Value == Vars::Aimbot::Melee::TrickstabSideEnum::Manual
+		&& fabsf(flSideMove) >= TRICKSTAB_MANUAL_THRESH;
+	const bool bBestLeft = bManualIn ? (flSideMove < 0.f) : (flLeft < flRight);
+	int iOptimal = -1;
+	float flBestYaw = FLT_MAX;
+	for (int i = 0; i < 4; i++)
+	{
+		if ((vCorners[i].y < 0.f) != bBestLeft)
+			continue;
+		const float flTestYaw = TrickstabYaw(vLead + vCorners[i], vLead);
+		const float flYawDiff = fabsf(TrickstabNorm(flTestYaw - flFoeYaw));
+		if (flYawDiff < flBestYaw)
+		{
+			flBestYaw = flYawDiff;
+			iOptimal = i;
+		}
+	}
+	int iOther = -1;
+	for (int i = 0; i < 4; i++)
+	{
+		if ((vCorners[i].y < 0.f) == bBestLeft)
+		{
+			iOther = i;
+			break;
+		}
+	}
+	const float flBackYaw = flFoeYaw + 180.f;
+	const bool bWithinBackAngle = fabsf(TrickstabNorm(TrickstabYaw(vLead, vMyPos) - flBackYaw)) <= 90.f;
+	const bool bStairstab = fabsf(vMyPos.z - vLead.z) >= TRICKSTAB_STAIRSTAB_H;
+	// Horizon: exact bank for the commit length; planning floor so assist
+	// steers while bankless (positioning for the future warp is its job).
+	const int iTicks = std::max(iBank, 8);
+	// Dual prediction: enemy extrapolated once (friction + gravity), reused
+	// by all paths. Exact on flat ground; full enemy MoveSim is the
+	// documented upgrade path if tests show divergence.
+	const float flDT = I::GlobalVars->interval_per_tick;
+	std::vector<Vec3> vFoePath;
+	vFoePath.reserve(iTicks);
+	{
+		Vec3 vP = vLead, vV = vFoeVel;
+		const bool bGround = (pTarget->m_fFlags() & FL_ONGROUND) != 0;
+		for (int i = 0; i < iTicks; i++)
+		{
+			if (bGround)
+			{
+				const float flSp = vV.Length2D();
+				if (flSp < 100.f)
+				{
+					vV.x = vV.y = 0.f;
+				}
+				else
+				{
+					const float flNew = std::max(flSp - flSp * 4.f * flDT, 0.f);
+					vV.x *= flNew / flSp;
+					vV.y *= flNew / flSp;
+				}
+			}
+			else
+				vV.z -= 800.f * flDT;
+			vP = vP + vV * flDT;
+			vFoePath.push_back(vP);
+		}
+	}
+	// Neutral resolve, full engine fidelity (R: two sims per tick, linear).
+	// One physics truth: walls/slides/steps/ledges inside P1 by construction.
+	Vec3 vResolved = vMyPos;
+	ResolveNeutral(pLocal, iTicks, vResolved);
+	struct SimTarget_t { bool bCenter; int iCorner; };
+	SimTarget_t aTargets[3] = {};
+	int iTargets = 0;
+	if (bStairstab)
+		aTargets[iTargets++] = { true, -1 };
+	else if (iOptimal >= 0)
+		aTargets[iTargets++] = { false, iOptimal };
+	DirResult_t aRes[3] = {};
+	int iDirs = 0;
+	float flBestScore = -1.f;
+	int iBestTick = INT_MAX;
+	int iBest = -1;
+	CTraceFilterHitscan wallFilter = {};
+	wallFilter.pSkip = pLocal;
+	const auto SimOne = [&](const SimTarget_t& t) -> int
+	{
+		if (iDirs >= 3)
+			return -1;
+		const Vec3 vCorner = t.bCenter ? vCenter : vCorners[t.iCorner];
+		const float flWishYaw = Wishdir(vResolved, vMyPos, vLead, vCorner);
+		DirResult_t& r = aRes[iDirs];
+		if (!SimDir(pLocal, flWishYaw, iTicks, vLead, vOMin, vOMax, vTMin, vTMax, r))
+			return -1;
+		r.flScore = ScorePath(pLocal, pTarget, r.vPath, vFoePath, vLeadEye, flFoeYaw, flOwnerYaw, flRange, vSwingMins, vSwingMaxs, r.vHitPos, r.vHitEye, r.vHitFoe, r.iHitTick, r.iHitCount);
+		r.bHittable = r.flScore >= 0.f;
+		m_iTotalPoints += r.iHitCount;
+		CGameTrace wallTrace = {};
+		SDK::TraceHull(vMyPos + Vec3(0.f, 0.f, 18.f), r.vEnd + Vec3(0.f, 0.f, 18.f), {}, {}, MASK_SOLID, &wallFilter, &wallTrace);
+		r.bHitWall = wallTrace.fraction < 0.8f && !(wallTrace.m_pEnt && wallTrace.m_pEnt->IsPlayer());
+		const int iIdx = iDirs++;
+		if (r.bHittable && (r.flScore > flBestScore + 1e-6f || (fabsf(r.flScore - flBestScore) <= 1e-6f && r.iHitTick < iBestTick)))
+		{
+			flBestScore = r.flScore;
+			iBestTick = r.iHitTick;
+			iBest = iIdx;
+		}
+		return iIdx;
+	};
+	int iOptimalIdx = -1;
+	for (int i = 0; i < iTargets; i++)
+		iOptimalIdx = SimOne(aTargets[i]);
+	// Other side ALWAYS (R5 axis-aligned; matador lives here). Lua's
+	// wall-gated conditional stays as a comment, not a gate.
+	if (!bStairstab && iOther >= 0)
+		SimOne({ false, iOther });
+	if (!bStairstab && bWithinBackAngle)
+		SimOne({ true, -1 });
+	if (!iDirs)
 		return;
-	m_bHasBest = true;
-	m_vBestDir = aRes[iBest].vDir;
-	m_bBestHittable = aRes[iBest].bHittable;
-	// Draw: all valid paths dim, best green (hittable) / yellow, hit marker +
-	// target link. Short expiry: refreshed per tick, self-cleaning.
+	// Fallback: points exist but no scored winner — steer by geometry.
+	if (iBest < 0 && m_iTotalPoints > 0)
+	{
+		Vec3 vFallback;
+		if (bStairstab)
+		{
+			const float flBackRad = flBackYaw * TRICKSTAB_DEG2RAD;
+			vFallback = (vLead + Vec3(cosf(flBackRad), sinf(flBackRad), 0.f) * flHx) - vMyPos;
+		}
+		else if (iOptimal >= 0)
+			vFallback = (vLead + vCorners[iOptimal]) - vMyPos;
+		else
+			return;
+		vFallback.z = 0.f;
+		const float flLen = vFallback.Length2D();
+		if (flLen < 1.f)
+			return;
+		m_bHasBest = true;
+		m_vBestDir = vFallback * (1.f / flLen);
+		m_bBestHittable = false;
+		m_iMinTicks = -1;
+	}
+	else if (iBest >= 0)
+	{
+		m_bHasBest = true;
+		m_vBestDir = aRes[iBest].vDir;
+		m_bBestHittable = aRes[iBest].bHittable;
+		m_iMinTicks = aRes[iBest].iHitTick + 1; // index -> warp length
+	}
+	else
+		return;
+	// Assist (R6/R8): toggle drives, bank irrelevant. Commit drives during
+	// its ticks. Viz-only otherwise: zero writes, phase-1 behavior kept.
+	const bool bAssist = Vars::Aimbot::Melee::TrickstabAssist.Value;
+	if (m_bCommitting || bAssist)
+		PlantMoves(pLocal, pCmd, m_vBestDir);
+	// Commit claim: scored best + live re-test at the hit state + not
+	// currently stabbing + >= 3 points + bank covers exact length. Generic
+	// warp driver excluded (one goal field — exact length wins, documented).
+	if (!m_bCommitting && m_bBestHittable && m_iMinTicks > 0
+		&& !Vars::Doubletap::Warp.Value && !F::Ticks.m_bWarp
+		&& !F::Ticks.m_bDoubletap && !F::Ticks.m_bRecharge && !F::Ticks.m_bSpeedhack
+		&& m_iTotalPoints >= 3 && iBank >= m_iMinTicks)
+	{
+		const int iHit = (iBest >= 0) ? iBest : 0;
+		const Vec3 vFoeNow = (iBest >= 0) ? aRes[iBest].vHitFoe : vLead;
+		if (StabAt(aRes[iHit].vHitEye, vFoeNow, vFoeNow + pTarget->m_vecViewOffset(), flFoeYaw, flOwnerYaw, flRange, vSwingMins, vSwingMaxs, pLocal, pTarget)
+			&& !StabAt(pLocal->GetShootPos(), pTarget->m_vecOrigin(), pTarget->m_vecOrigin() + pTarget->m_vecViewOffset(), flFoeYaw, flOwnerYaw, flRange, vSwingMins, vSwingMaxs, pLocal, pTarget))
+		{
+			m_bCommitting = true;
+			m_iCommitLeft = m_iMinTicks;
+			m_iCommitAge = 0;
+			F::Ticks.m_bWarp = true;
+			F::Ticks.m_iShiftedGoal = std::max(iBank - m_iMinTicks, 0);
+		}
+	}
+	// Commit lifecycle: plant continues via the assist branch above while
+	// the warp is out; release -> 3 live-sent back-aimed bonus ticks (safe
+	// subset; choked-range variant is a tested follow-up, not this pass).
+	if (m_bCommitting)
+	{
+		m_iCommitAge++;
+		if (!F::Ticks.m_bWarp || m_iCommitAge > 90)
+		{
+			m_bCommitting = false;
+			m_iCommitLeft = 0;
+			m_iBonusLeft = 3;
+		}
+		else if (m_iCommitLeft > 0)
+			m_iCommitLeft--;
+	}
+	if (!m_bCommitting && m_iBonusLeft > 0)
+	{
+		const float flBackRad = flBackYaw * TRICKSTAB_DEG2RAD;
+		Vec3 vBack = (vLead + Vec3(cosf(flBackRad), sinf(flBackRad), 0.f) * flHx) - vMyPos;
+		vBack.z = 0.f;
+		if (vBack.Length2D() >= 1.f)
+		{
+			vBack = vBack * (1.f / vBack.Length2D());
+			PlantMoves(pLocal, pCmd, vBack);
+		}
+		m_iBonusLeft--;
+	}
+	// Draw: all valid paths dim, best green (scored) / yellow (fallback),
+	// cyan link while committing. Short expiry, refreshed per tick.
 	const float flUntil = I::GlobalVars->curtime + 1.f;
+	const Vec3 vTargetCenter = pTarget->GetCenter();
 	for (int i = 0; i < iDirs; i++)
 	{
 		if (!aRes[i].bValid || (int)aRes[i].vPath.size() < 2)
@@ -238,7 +544,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 		{
 			const Vec3 vMark = aRes[i].bHittable ? aRes[i].vHitPos : aRes[i].vEnd;
 			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vMark, vMark + Vec3(0, 0, 5)), flUntil, tCol, true);
-			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vMark, vTargetCenter), flUntil, Color_t(255, 255, 0), true);
+			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vMark, vTargetCenter), flUntil, m_bCommitting ? Color_t(0, 255, 255) : Color_t(255, 255, 0), true);
 		}
 	}
 }

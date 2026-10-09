@@ -1,4 +1,5 @@
 #include "Ticks.h"
+#include "../../SDK/VarsMelee.h"
 
 #include "../PacketManip/AntiAim/AntiAim.h"
 #include "../EnginePrediction/EnginePrediction.h"
@@ -243,6 +244,11 @@ void CTicks::MoveManage()
 		m_iMaxUsrCmdProcessTicks = std::min(m_iMaxUsrCmdProcessTicks, 8);
 	m_iMaxShift = m_iMaxUsrCmdProcessTicks - std::max(m_iMaxUsrCmdProcessTicks - Vars::Doubletap::RechargeLimit.Value, 0) - (F::AntiAim.YawOn() ? F::AntiAim.AntiAimTicks() : 0);
 	m_iMaxShift = std::max(m_iMaxShift, 1);
+	// Decoupled warp extension (+3 bank, own toggle in the warp tab). Only
+	// our cap moves; the server convar stays the truth. Trickstab just reads
+	// a bigger bank — neither system knows the other exists.
+	if (Vars::Aimbot::Melee::WarpExtension.Value)
+		m_iMaxShift += 3;
 }
 
 void CTicks::CreateMove(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd, bool* pSendPacket)

@@ -1,52 +1,81 @@
 #pragma once
 #include "../../../SDK/SDK.h"
 
-// Auto trickstab, phase 1 (visualize only): every tick, simulate warp-fan
-// directions with the ENGINE sim (MoveSim, same facility as the aimbot),
-// score each by earliest hittable tick (behind + range + visibility per path
-// point), keep the best, draw all paths + best. NO movement writes, NO
-// firing, NO warp execution this phase.
-// LUT ported VERBATIM from Auto_Trickstab (qawe): relative-quadrant (-1/0/1
-// per axis, 1u buffer, vertical gate zeroes it) -> corner subset table.
-// SIMULATION is Amalgam engine instead of Lua math. Deliberate deviations
-// (all noted): hull radii for hitbox radii (mapped fields), no TARGET_
-// EXTENSION/coast pass (engine integrates internally), no manual A/D side
-// override or yaw-delta side preference (movement-commitment phase), no
-// TF2.* constant table (live sv_* via engine).
+// Auto trickstab: mirrors Auto_Trickstab (qawe) CalculateTrickstab path
+// selection — best side by yaw-delta (Manual picker forces via game input,
+// no input falls back to Automatic), optimal-side corner, other side always
+// (axis-aligned, rotation-independent; matador lives here), center only when
+// within backstab angle (stairstab: center only) — but with Amalgam-native
+// upgrades, all frozen by spec:
+//
+// - Minkowski collision: we are a point, the target box absorbs both bodies
+//   (expanded = theirMin-ourMax .. theirMax-ourMin, live hulls). Corners at
+//   expanded + 1u graze padding (never touch, never slow). Contact break =
+//   exact strict-inside test, 3D, 6 comparisons.
+// - Wishdir: neutral ENGINE resolve (bank ticks, zero input) -> residual to
+//   the live corner + 450 extension, applied unrotated at live pos. One
+//   physics truth, linear cost, never N^2.
+// - Scoring: gates unified with the aimbot firing path (CanBackstab dot core
+//   + live weapon range + CanHit LOS decomposition, pure: no prediction side
+//   effects), ranking by Lua weights (0.7 yaw + 0.3 distance, tie -> early).
+// - Dual prediction: the enemy is extrapolated per tick (friction + gravity)
+//   and every test runs against its predicted pose, not a static lead.
+// - Assist: while the toggle holds, the best wishdir is planted into cmd
+//   (view-relative, zero view writes; autostrafe routed when enabled).
+// - Commit: exact-minTicks warp via public Ticks fields, AA frozen for the
+//   commit ticks only, 3 live-sent back-aimed bonus ticks, recharge gates.
+//
+// NO firing here. The aimbot stays the firing authority.
 class CAutoTrickstab
 {
 private:
 	struct DirResult_t
 	{
-		Vec3 vDir = {};
+		Vec3 vDir = {}; // dash wishdir (yaw unit vector, world)
 		Vec3 vEnd = {};
-		std::vector<Vec3> vPath = {};
+		std::vector<Vec3> vPath = {}; // sim feet origins
 		bool bValid = false;
+		bool bHitWall = false;
 		bool bHittable = false;
-		int iHitTick = -1;
+		float flScore = -1.f; // path-best weighted score
+		int iHitTick = -1;    // index into vPath of the path-best score
 		int iHitCount = 0;
-		Vec3 vHitPos = {};
-		float flScore = 0.f;
+		Vec3 vHitPos = {};  // feet at the path-best tick
+		Vec3 vHitEye = {};  // eye at the path-best tick
+		Vec3 vHitFoe = {};  // predicted enemy feet at the path-best tick
 	};
 
-	// Engine sim along a world yaw for iTicks. Full restore on ALL paths.
-	// Stops AT live opponents (combined-radii contact break, Lua-faithful:
-	// warp skirts to behind, never through). Returns false when the sim
-	// failed/stalled elsewhere (direction unusable for warp).
-	bool SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, const Vec3& vTargetPos, float flHitbox, DirResult_t& tOut);
-	// Earliest hittable path index, mirroring Auto_Trickstab CanBackstabFromPos
-	// (AABB closest-point + BACKSTAB_RANGE sphere + yaw-delta + LOS, geometry
-	// first). Amalgam's own CanBackstab stays the authority for live firing
-	// decisions; this ranks sim-future states only. Returns -1, counts hits.
-	int ScorePath(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CTFPlayer* pTarget, const Vec3& vLeadPos, const std::vector<Vec3>& vPath, Vec3& vHitPosOut, int& iHitCountOut);
+	// Engine dash sim along a world yaw. Full restore on ALL paths. Stops AT
+	// the opponent via the exact Minkowski predicate (never through).
+	bool SimDir(CTFPlayer* pLocal, float flYawDeg, int iTicks, const Vec3& vLeadPos, const Vec3& vOMin, const Vec3& vOMax, const Vec3& vTMin, const Vec3& vTMax, DirResult_t& tOut);
+	// Neutral resolve: bank ticks, zero input. Returns the resolved origin.
+	bool ResolveNeutral(CTFPlayer* pLocal, int iTicks, Vec3& vOut);
+	// Wishdir yaw from the residual (resolved -> live corner + 450).
+	float Wishdir(const Vec3& vResolved, const Vec3& vMyPos, const Vec3& vLeadPos, const Vec3& vCorner);
+	// Pure per-tick stab test (aimbot-unified gates). No side effects.
+	bool StabAt(const Vec3& vSimEye, const Vec3& vFoePos, const Vec3& vFoeEye, float flFoeYaw, float flOwnerYaw, float flRange, const Vec3& vSwingMins, const Vec3& vSwingMaxs, CTFPlayer* pLocal, CTFPlayer* pTarget);
+	// Weighted Lua ranking for one path. Fills path-best fields.
+	float ScorePath(CTFPlayer* pLocal, CTFPlayer* pTarget, const std::vector<Vec3>& vPath, const std::vector<Vec3>& vFoePath, const Vec3& vLeadEye, float flFoeYaw, float flOwnerYaw, float flRange, const Vec3& vSwingMins, const Vec3& vSwingMaxs, Vec3& vHitPosOut, Vec3& vHitEyeOut, Vec3& vHitFoeOut, int& iHitTickOut, int& iHitCountOut);
+	// Plant a world wishdir into cmd without touching view (view-relative
+	// decompose against the final angles). Autostrafe routed when enabled.
+	void PlantMoves(CTFPlayer* pLocal, CUserCmd* pCmd, const Vec3& vWishDir);
 
 public:
-	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon);
+	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
+	bool IsCommitting() const { return m_bCommitting; }
 
-	// Best direction this tick (for later phases: movement + warp execution).
+	// Best direction this tick (assist steering + warp commit).
 	Vec3 m_vBestDir = {};
 	bool m_bHasBest = false;
 	bool m_bBestHittable = false;
+	int m_iTotalPoints = 0; // commit gate: >= 3
+	int m_iMinTicks = -1;   // warp length (hit index + 1)
+
+private:
+	bool m_bCommitting = false;
+	int m_iCommitLeft = 0;
+	int m_iCommitAge = 0;
+	int m_iBonusLeft = 0;
 };
 
 ADD_FEATURE(CAutoTrickstab, AutoTrickstab);

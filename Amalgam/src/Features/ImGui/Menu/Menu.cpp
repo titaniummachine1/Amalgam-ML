@@ -421,6 +421,8 @@ void CMenu::MenuAimbot(int iTab)
 					FToggle(Vars::Aimbot::Melee::ChargeReach, FToggleEnum::Left);
 					FDropdown(Vars::Aimbot::Melee::ChargeTiming);
 					FToggle(Vars::Aimbot::Melee::Rage, FToggleEnum::Left);
+					FToggle(Vars::Aimbot::Melee::TrickstabAssist, FToggleEnum::Right);
+					FDropdown(Vars::Aimbot::Melee::TrickstabSide);
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{
@@ -732,6 +734,7 @@ void CMenu::MenuHVH(int iTab)
 					FSlider(Vars::Doubletap::RechargeLimit, FSliderEnum::Left);
 					FSlider(Vars::Doubletap::PassiveRecharge, FSliderEnum::Right);
 					FToggle(Vars::Aimbot::Melee::AutoTrickstab, FToggleEnum::Left);
+					FToggle(Vars::Aimbot::Melee::WarpExtension, FToggleEnum::Right);
 				} EndSection();
 				if (Section("Fakelag"))
 				{

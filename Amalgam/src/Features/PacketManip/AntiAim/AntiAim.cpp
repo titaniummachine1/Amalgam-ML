@@ -5,6 +5,7 @@
 #include "../../Misc/Misc.h"
 #include "../../Aimbot/AutoRocketJump/AutoRocketJump.h"
 #include "../../AntiCheatCompatibility/AntiCheatCompatibility.h"
+#include "../../Aimbot/AimbotMelee/AutoTrickstab.h"
 
 bool CAntiAim::AntiAimOn()
 {
@@ -35,6 +36,12 @@ bool CAntiAim::ShouldRun(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 	if (!pLocal->IsAlive() || pLocal->IsAGhost() || pLocal->IsTaunting() || pLocal->m_MoveType() != MOVETYPE_WALK || pLocal->InCond(TF_COND_HALLOWEEN_KART)
 		|| G::Attacking == 1 || F::AutoRocketJump.IsRunning() || F::Ticks.m_bDoubletap // this m_bDoubletap check can probably be removed if we fix tickbase correctly
 		|| pWeapon && pWeapon->m_iItemDefinitionIndex() == Soldier_m_TheBeggarsBazooka && pCmd->buttons & IN_ATTACK && !(G::LastUserCmd->buttons & IN_ATTACK))
+		return false;
+
+	// Frozen for trickstab commit ticks only (R12): the plant decomposes
+	// against pre-AA angles, so any post-plant AA write would rotate the
+	// world direction. Assist walk-up keeps AA running normally.
+	if (F::AutoTrickstab.IsCommitting())
 		return false;
 
 	if (pLocal->InCond(TF_COND_SHIELD_CHARGE) || pCmd->buttons & IN_ATTACK2 && pLocal->m_bShieldEquipped() && pLocal->m_flChargeMeter() == 100.f)

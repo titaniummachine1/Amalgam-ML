@@ -14,6 +14,15 @@ namespace Aimbot {
 			CVar(WhipTeam, "Whip team", false);
 			CVar(Rage, "Rage", false);
 			CVar(AutoTrickstab, "Auto trickstab", false);
+		CVar(TrickstabAssist, "Trickstab assist", false);
+		CVarEnum(TrickstabSide, "Trickstab side", 1, NONE, nullptr,
+			VA_LIST("Manual", "Automatic"),
+			Manual, Automatic);
+		// Warp extension (+3 bank, own toggle in the warp tab). Lives HERE,
+		// not Vars.h: Vars.h already defines Vars::Doubletap::Section(), so
+		// a second Doubletap block here is a same-TU redefinition error.
+		// Ticks.cpp + Menu.cpp include this file; decoupled by design.
+		CVar(WarpExtension, "Warp extension", false);
 			CVar(ChargeReach, "Charge reach", false);
 			CVarEnum(ChargeTiming, "Charge timing", 1, NONE, nullptr,
 				VA_LIST("Early", "Late"),
