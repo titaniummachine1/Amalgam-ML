@@ -157,6 +157,9 @@ std::vector<TickRecord*> CBacktrack::GetValidRecords(std::vector<TickRecord*>& v
 	{
 		for (auto pRecord : vRecords)
 		{
+			if (pRecord->m_bInvalid) // teleported: never valid, never refreshed
+				continue;
+
 			float flDelta = flCorrect - TICKS_TO_TIME(iServerTick - TIME_TO_TICKS(pRecord->m_flSimTime));
 			if (fabsf(flDelta) > GetWindow())
 				continue;
@@ -170,6 +173,9 @@ std::vector<TickRecord*> CBacktrack::GetValidRecords(std::vector<TickRecord*>& v
 		float flMinDelta = 0.2f;
 		for (auto pRecord : vRecords)
 		{
+			if (pRecord->m_bInvalid)
+				continue;
+
 			float flDelta = flCorrect - TICKS_TO_TIME(iServerTick - TIME_TO_TICKS(pRecord->m_flSimTime));
 			if (fabsf(flDelta) > flMinDelta)
 				continue;
@@ -230,6 +236,9 @@ void CBacktrack::MakeRecords()
 			pPlayer->m_vecOrigin(),
 			pPlayer->m_vecMins(),
 			pPlayer->m_vecMaxs(),
+			pPlayer->m_vecVelocity(),
+			pPlayer->m_vecOrigin() + pPlayer->m_vecViewOffset(),
+			H::Entities.GetEyeAngles(pPlayer->entindex()),
 			m_mDidShoot[pPlayer->entindex()]
 		);
 		TickRecord& tCurRecord = vRecords.front();
@@ -255,19 +264,10 @@ void CBacktrack::MakeRecords()
 				bLagComp = true;
 				if (!H::Entities.GetLagCompensation(pPlayer->entindex()))
 					vRecords.resize(1);
+				// Older records are teleported history: marked, never
+				// refreshed (consumers skip them; the refresh loop that
+				// memcpyd bones every tick is gone with it).
 				std::for_each(vRecords.begin() + 1, vRecords.end(), [](auto& tRecord) { tRecord.m_bInvalid = true; });
-			}
-
-			for (auto& tRecord : vRecords)
-			{
-				if (!tRecord.m_bInvalid)
-					continue;
-
-				tRecord.m_vOrigin = tCurRecord.m_vOrigin;
-				tRecord.m_vMins = tCurRecord.m_vMins;
-				tRecord.m_vMaxs = tCurRecord.m_vMaxs;
-				tRecord.m_bOnShot = tCurRecord.m_bOnShot;
-				memcpy(tRecord.m_aBones, tCurRecord.m_aBones, sizeof(tRecord.m_aBones));
 			}
 		}
 
@@ -285,6 +285,14 @@ void CBacktrack::CleanRecords()
 			continue;
 
 		auto& vRecords = m_mRecords[pPlayer];
+
+		// Dormant: explicit reset (Rijin parity). Window aging would get
+		// there eventually; this doesn't aim at ghosts for a second.
+		if (pPlayer->IsDormant())
+		{
+			vRecords.clear();
+			continue;
+		}
 
 		if (!pPlayer->IsAlive() || pPlayer->IsAGhost())
 		{

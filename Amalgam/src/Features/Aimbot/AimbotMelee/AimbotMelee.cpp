@@ -428,6 +428,22 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 	filter.pSkip = pLocal;
 
 	const Vec3 vSelectAngle = tTarget.m_vAngleTo; // selection (bone) angle, pre-clamp
+	// Record-independent gate: hoisted (identical outcome, runs once).
+	// The clamp point on steep geometry can sit outside AimFOV while the
+	// target is hittable. Rage skips it.
+	if (!Vars::Aimbot::Melee::Rage.Value && !F::AimbotGlobal.ShouldAimAtAngle(vSelectAngle))
+		return false;
+	const Vec3 vViewAngles = G::CurrentUserCmd->viewangles;
+	const bool bKnifeStab = Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID() == TF_WEAPON_KNIFE;
+	// Backtrack-to-crosshair: EVERY valid record is tested; the hittable one
+	// closest to the crosshair wins — not the nearest, not the newest. Ties
+	// keep the earlier (fresher, deque-front) record via strict less-than,
+	// which is the younger-ticks-are-stabler rule made explicit.
+	TickRecord* pBest = nullptr;
+	Vec3 vBestPos = {}, vBestAngle = {};
+	float flBestFov = FLT_MAX;
+	TickRecord* pFall = nullptr;
+	Vec3 vFallPos = {}, vFallAngle = {};
 	for (auto pRecord : vRecords)
 	{
 		// Closest point on the target AABB to our eye. Point-blank (eye
@@ -437,13 +453,9 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		const Vec3 vClamp = vExecEye.Clamp(pRecord->m_vOrigin + pRecord->m_vMins, pRecord->m_vOrigin + pRecord->m_vMaxs);
 		if (vClamp.DistToSqr(vExecEye) >= 1.f)
 			tTarget.m_vPos = vClamp;
-			if (Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID() == TF_WEAPON_KNIFE)
+			if (bKnifeStab)
 				tTarget.m_vPos.x = pRecord->m_vOrigin.x, tTarget.m_vPos.y = pRecord->m_vOrigin.y;
 			Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(vExecEye, tTarget.m_vPos), tTarget.m_vAngleTo);
-		// Gate on the selection angle: the clamp point on steep geometry can
-		// sit outside AimFOV while the target is hittable. Rage skips it.
-		if (!Vars::Aimbot::Melee::Rage.Value && !F::AimbotGlobal.ShouldAimAtAngle(vSelectAngle))
-			continue;
 
 		Vec3 vRestoreOrigin = tTarget.m_pEntity->GetAbsOrigin();
 		Vec3 vRestoreMins = tTarget.m_pEntity->m_vecMins();
@@ -464,25 +476,34 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 			bReturn = trace.m_pEnt == tTarget.m_pEntity;
 		}
 
-		if (bReturn && Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID() == TF_WEAPON_KNIFE)
-			bReturn = CanBackstab(tTarget.m_pEntity, pLocal, tTarget.m_vAngleTo);
-		
 		tTarget.m_pEntity->SetAbsOrigin(vRestoreOrigin);
 		tTarget.m_pEntity->m_vecMins() = vRestoreMins;
 		tTarget.m_pEntity->m_vecMaxs() = vRestoreMaxs;
 
 		if (bReturn)
 		{
-			tTarget.m_pRecord = pRecord;
-			tTarget.m_bBacktrack = tTarget.m_iTargetType == TargetEnum::Player;
-			
-			return true;
+			const float flFov = Math::CalcAngle(vExecEye, tTarget.m_vPos).DeltaAngle(vViewAngles).Length2DSqr();
+			if (flFov < flBestFov)
+			{
+				// Knife verified only on improvement (cheaper than before:
+				// the repredict inside runs only for a new leader).
+				if (bKnifeStab && !CanBackstab(tTarget.m_pEntity, pLocal, tTarget.m_vAngleTo))
+					continue;
+
+				flBestFov = flFov;
+				pBest = pRecord;
+				vBestPos = tTarget.m_vPos;
+				vBestAngle = tTarget.m_vAngleTo;
+			}
 		}
 		else switch (Vars::Aimbot::General::AimType.Value)
 		{
 		case Vars::Aimbot::General::AimTypeEnum::Smooth:
 		case Vars::Aimbot::General::AimTypeEnum::Assistive:
 		{
+			if (pFall)
+				break;
+
 			auto vAngle = Math::CalcAngle(vExecEye, tTarget.m_vPos);
 
 			Math::AngleVectors(vAngle, &vForward);
@@ -490,9 +511,87 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 
 			SDK::TraceHull(m_vEyePos, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
 			if (trace.m_pEnt == tTarget.m_pEntity)
-				return 2;
+			{
+				pFall = pRecord;
+				vFallPos = tTarget.m_vPos;
+				vFallAngle = vAngle;
+			}
 		}
 		}
+	}
+
+	// Sweep fallback (Rijin height sweep, crosshair-ranked): when the clamp
+	// point finds nothing, walk the box feet->head. Entity moved once per
+	// record; traces per candidate; the winner alone gets the full knife
+	// verify. Zero common-case cost: runs only when the cheap path missed.
+	if (!pBest)
+	{
+		for (auto pRecord : vRecords)
+		{
+			Vec3 vRestoreOrigin = tTarget.m_pEntity->GetAbsOrigin();
+			Vec3 vRestoreMins = tTarget.m_pEntity->m_vecMins();
+			Vec3 vRestoreMaxs = tTarget.m_pEntity->m_vecMaxs();
+
+			tTarget.m_pEntity->SetAbsOrigin(pRecord->m_vOrigin);
+			tTarget.m_pEntity->m_vecMins() = pRecord->m_vMins + PLAYER_ORIGIN_COMPRESSION;
+			tTarget.m_pEntity->m_vecMaxs() = pRecord->m_vMaxs - PLAYER_ORIGIN_COMPRESSION;
+
+			for (float flMod = 0.f; flMod <= 1.f; flMod += 0.05f)
+			{
+				const Vec3 vPoint = pRecord->m_vOrigin + (pRecord->m_vMins + pRecord->m_vMaxs) * flMod;
+				const Vec3 vAngle = Math::CalcAngle(vExecEye, vPoint);
+				if (!Vars::Aimbot::Melee::Rage.Value && !F::AimbotGlobal.ShouldAimAtAngle(vAngle))
+					continue;
+
+				Vec3 vForward; Math::AngleVectors(vAngle, &vForward);
+				Vec3 vTraceEnd = vExecEye + vForward * flRange;
+
+				SDK::TraceHull(m_vEyePos, vTraceEnd, {}, {}, MASK_SOLID, &filter, &trace);
+				bool bHit = trace.m_pEnt == tTarget.m_pEntity;
+				if (!bHit)
+				{
+					SDK::TraceHull(m_vEyePos, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
+					bHit = trace.m_pEnt == tTarget.m_pEntity;
+				}
+				if (!bHit)
+					continue;
+
+				const float flFov = vAngle.DeltaAngle(vViewAngles).Length2DSqr();
+				if (flFov < flBestFov)
+				{
+					if (bKnifeStab && !CanBackstab(tTarget.m_pEntity, pLocal, vAngle))
+						continue;
+
+					flBestFov = flFov;
+					pBest = pRecord;
+					vBestPos = vPoint;
+					vBestAngle = vAngle;
+				}
+			}
+
+			tTarget.m_pEntity->SetAbsOrigin(vRestoreOrigin);
+			tTarget.m_pEntity->m_vecMins() = vRestoreMins;
+			tTarget.m_pEntity->m_vecMaxs() = vRestoreMaxs;
+		}
+	}
+
+	if (pBest)
+	{
+		tTarget.m_vPos = vBestPos;
+		tTarget.m_vAngleTo = vBestAngle;
+		tTarget.m_pRecord = pBest;
+		tTarget.m_bBacktrack = tTarget.m_iTargetType == TargetEnum::Player;
+
+		return true;
+	}
+
+	if (pFall)
+	{
+		tTarget.m_vPos = vFallPos;
+		tTarget.m_vAngleTo = vFallAngle;
+		tTarget.m_pRecord = pFall;
+
+		return 2;
 	}
 
 	return false;

@@ -198,10 +198,10 @@ void CMenu::MenuAimbot(int iTab)
 				}
 				if (Section("Backtrack", 8))
 				{
-					FSlider(Vars::Backtrack::Latency);
-					FSlider(Vars::Backtrack::Interp);
-					FSlider(Vars::Backtrack::Window);
-					//FToggle(Vars::Backtrack::PreferOnShot);
+					FSlider(Vars::Backtrack::Window); FTooltip("How far back in time valid records go. Wider catches fakelag, narrower never touches ghosts.");
+					FSlider(Vars::Backtrack::Latency); FTooltip("Fake latency via sequence shift: bigger window, but the scoreboard shows it. Zero hides everything.");
+					FSlider(Vars::Backtrack::Interp); FTooltip("Fake interp, same deal as latency, smaller. Zero hides everything.");
+					FToggle(Vars::Backtrack::PreferOnShot, FToggleEnum::Left); FTooltip("Prefer records where the enemy shot: real poses, beats resolver-bait.");
 				} EndSection();
 				if (Section("Crit Hack", 8))
 				{

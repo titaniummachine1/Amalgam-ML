@@ -3,6 +3,7 @@
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
 #include "../../Ticks/Ticks.h"
 #include "../../Misc/Misc.h"
+#include "../../Backtrack/Backtrack.h"
 #include "../../../SDK/VarsMelee.h"
 
 // Verbatim Lua constants (Auto_Trickstab TF2 table).
@@ -280,14 +281,31 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 			}
 		}
 	}
-	// Lead: half ping + choke, the pose the server will judge.
+	// Lead base: newest valid RECORD when available (its velocity and eye
+	// are record-time truth; live entity lies through choke), else live.
+	// This is also what makes the dual prediction honest on laggy targets.
 	Vec3 vLead = pTarget->m_vecOrigin();
-	const Vec3 vFoeVel = pTarget->m_vecVelocity();
+	Vec3 vLeadEye = vLead + pTarget->m_vecViewOffset();
+	Vec3 vFoeVel = pTarget->m_vecVelocity();
+	float flFoeYaw = H::Entities.GetEyeAngles(pTarget->entindex()).y;
+	if (std::vector<TickRecord*> vRecs = {}; F::Backtrack.GetRecords(pTarget, vRecs))
+	{
+		vRecs = F::Backtrack.GetValidRecords(vRecs, nullptr);
+		if (!vRecs.empty() && !vRecs.front()->m_bInvalid)
+		{
+			const TickRecord* pRec = vRecs.front();
+			vLead = pRec->m_vOrigin;
+			vLeadEye = pRec->m_vEyePos;
+			vFoeVel = pRec->m_vVelocity;
+			flFoeYaw = pRec->m_vEyeAngles.y;
+		}
+	}
 	if (auto pNetChan = I::EngineClient->GetNetChannelInfo())
 	{
 		const float flLeadT = (std::max(pNetChan->GetLatency(FLOW_OUTGOING), 0.f) + std::max(pNetChan->GetLatency(FLOW_INCOMING), 0.f)) * 0.5f
 			+ H::Entities.GetChoke(pTarget->entindex()) * I::GlobalVars->interval_per_tick;
 		vLead = vLead + vFoeVel * flLeadT;
+		vLeadEye = vLeadEye + vFoeVel * flLeadT;
 	}
 	const int iBank = F::Ticks.m_iShiftedTicks;
 	// Live weapon range/hull (CanHit decomposition, R10 unified predicate).
@@ -301,8 +319,6 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 	const Vec3 vSwingMins = { -flHull, -flHull, -flHull };
 	const Vec3 vSwingMaxs = { flHull, flHull, flHull };
 	const Vec3 vMyPos = pLocal->m_vecOrigin();
-	const Vec3 vLeadEye = vLead + pTarget->m_vecViewOffset();
-	const float flFoeYaw = H::Entities.GetEyeAngles(pTarget->entindex()).y;
 	const float flOwnerYaw = pCmd->viewangles.y;
 	// Commit lifecycle + bonus run WITHOUT bank (bonus ticks are live-sent).
 	// Everything below this point is sim-bound: bank 0 -> fully idle.
