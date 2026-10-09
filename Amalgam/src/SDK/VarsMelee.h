@@ -14,6 +14,7 @@ namespace Aimbot {
 			CVar(WhipTeam, "Whip team", false);
 			CVar(Rage, "Rage", false);
 			CVar(AutoTrickstab, "Auto trickstab", false);
+		CVar(TrickstabDraw, "Trickstab draw", true);
 		CVar(TrickstabAssist, "Trickstab assist", false);
 		CVarEnum(TrickstabSide, "Trickstab side", 1, NONE, nullptr,
 			VA_LIST("Manual", "Automatic"),

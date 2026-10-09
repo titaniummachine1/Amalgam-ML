@@ -454,7 +454,10 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 		const Vec3 vCorner = t.bCenter ? vCenter : vCorners[t.iCorner];
 		const float flWishYaw = Wishdir(vResolved, vMyPos, vLead, vCorner);
 		DirResult_t& r = aRes[iDirs];
-		if (!SimDir(pLocal, flWishYaw, iTicks, vLead, vOMin, vOMax, vTMin, vTMax, r))
+		// Stored regardless of outcome: failed/stalled paths still draw
+		// (that's the "shows it all" rule). Only clean paths can win.
+		SimDir(pLocal, flWishYaw, iTicks, vLead, vOMin, vOMax, vTMin, vTMax, r);
+		if (r.vPath.empty())
 			return -1;
 		r.flScore = ScorePath(pLocal, pTarget, r.vPath, vFoePath, vLeadEye, flFoeYaw, flOwnerYaw, flRange, vSwingMins, vSwingMaxs, r.vHitPos, r.vHitEye, r.vHitFoe, r.iHitTick, r.iHitCount, r.vHits);
 		r.bHittable = r.flScore >= 0.f;
@@ -463,7 +466,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 		SDK::TraceHull(vMyPos + Vec3(0.f, 0.f, 18.f), r.vEnd + Vec3(0.f, 0.f, 18.f), {}, {}, MASK_SOLID, &wallFilter, &wallTrace);
 		r.bHitWall = wallTrace.fraction < 0.8f && !(wallTrace.m_pEnt && wallTrace.m_pEnt->IsPlayer());
 		const int iIdx = iDirs++;
-		if (r.bHittable && (r.flScore > flBestScore + 1e-6f || (fabsf(r.flScore - flBestScore) <= 1e-6f && r.iHitTick < iBestTick)))
+		if (r.bValid && r.bHittable && (r.flScore > flBestScore + 1e-6f || (fabsf(r.flScore - flBestScore) <= 1e-6f && r.iHitTick < iBestTick)))
 		{
 			flBestScore = r.flScore;
 			iBestTick = r.iHitTick;
@@ -511,12 +514,11 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 		m_bBestHittable = aRes[iBest].bHittable;
 		m_iMinTicks = aRes[iBest].iHitTick + 1; // index -> warp length
 	}
-	else
-		return;
-	// Assist (R6/R8): toggle drives, bank irrelevant. Commit drives during
-	// its ticks. Viz-only otherwise: zero writes, phase-1 behavior kept.
+	// else: no winner — fields stay clear, but the sims still draw below.
+	// Assist (R6/R8): toggle drives. Commit drives on its frozen geometry
+	// even if this tick unscored; assist never plants a stale direction.
 	const bool bAssist = Vars::Aimbot::Melee::TrickstabAssist.Value;
-	if (m_bCommitting || bAssist)
+	if (m_bCommitting || (bAssist && m_bHasBest))
 		PlantMoves(pLocal, pCmd, m_vBestDir);
 	// Commit claim: scored best + live re-test at the hit state + not
 	// currently stabbing + >= 3 points + bank covers exact length. Generic
@@ -538,16 +540,20 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 			F::Ticks.m_iShiftedGoal = std::max(iBank - m_iMinTicks, 0);
 		}
 	}
-	// Draw: paths bright enough to read, per-tick dots (green = hittable),
-	// hit marker + feet-level target link (no mid-air diagonals).
+	// Draw EVERYTHING the sims produced (toggle in Visuals > Prediction):
+	// clean paths bright, stalled ones dim, per-tick dots, marker + feet
+	// link on the winner. No winner / no hits still draws — the rule is:
+	// if a sim ran, you see it.
+	if (!Vars::Aimbot::Melee::TrickstabDraw.Value)
+		return;
 	const float flUntil = I::GlobalVars->curtime + 1.f;
 	for (int i = 0; i < iDirs; i++)
 	{
-		if (!aRes[i].bValid || (int)aRes[i].vPath.size() < 2)
+		if (aRes[i].vPath.empty())
 			continue;
 		const bool bIsBest = (i == iBest);
-		Color_t tCol = bIsBest
-			? (aRes[i].bHittable ? Color_t(0, 255, 0) : Color_t(255, 255, 0))
+		Color_t tCol = !aRes[i].bValid ? Color_t(255, 255, 255, 55)
+			: bIsBest ? (aRes[i].bHittable ? Color_t(0, 255, 0) : Color_t(255, 255, 0))
 			: Color_t(255, 255, 255, 110);
 		for (size_t k = 0; k + 1 < aRes[i].vPath.size(); k++)
 			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(aRes[i].vPath[k], aRes[i].vPath[k + 1]), flUntil, tCol, true);
