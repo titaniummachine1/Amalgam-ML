@@ -231,3 +231,37 @@ Control split: AI owns odds, user owns bounded preset + panic-keybind override
 - NEVER `Stop-Process -Name python3` (kills the tool shell); use `taskkill /PID <pid> /F`.
 - Detached launches via Start-Process currently flaky; prefer foreground with long timeout.
 - Checkpoints save on best-eval only → crashed runs lose nothing but time.
+
+## 2026-10-10 overnight (4th pull + attention bracket)
+- DATA 2x: pulled 37 MGE + 11 orange from brygadagraczy.pl (10-08..10-10),
+  dumped all 125 demos, didreg 128, dataset_all.db 121 live demos (42.5M ticks).
+  Rebuilt trainB 3.24M windows (soldier 660k -> 1.34M) + evalB 159k + all B
+  caches (dense66/threatwin/mspd) + NEW trainB/evalB_dense132 (132-tick targets,
+  cov@132 0.88/0.94). Eval NOT byte-identical (builder evolved: short-series
+  inclusion) -> champion RE-BASELINED on new files: 97.7/87.2/61.2/28.0/11.9
+  (identical -> comparable). Fixed stale header contract (build_mspd/
+  verify_csv now expect wcls/w0/w1/w2); dyaw never existed for B (eyep only in
+  eye DB) -> skipped, matches history.
+- IO: soldier rows scatter across 12GB X (page faults ~1.4s/batch) -> repack20.py
+  (contiguous X20/HD66/HD132 + VD/S0 sidecars, resume-safe .done.json).
+  train_attn66/train_correct132 dual-mode loaders (repack fast path w/
+  done-guard, legacy fallback). NOTE: np.save .npy flaked Errno 22 twice
+  (transient lock); S0 sidecar bypassed via threatwin direct load.
+- VARIANT A (GRU20-96 + single-head attention over 66 warmup hiddens + coast
+  suggestion cols, warm-started champion-exact incl. 22-dim zero-pad):
+  ep1 wiped at 34% (4AM machine-wide python kill) + relaunched on repack.
+- VARIANT C (correction-transformer 1L d32 2head, one pass over 132 ticks,
+  friction-coast base AS INPUT, uncertainty ramp, absolute power loss):
+  ep1 random-head 51/56/44 (destroys base) -> zero-init head; relative loss
+  EXPLOITED via sign flips (1%!) -> absolute champion-formula loss; ramp
+  recovered near field. ep1: 96/80/51/12/3, ep2: 96/79/45/26/4.5 (ALL
+  @7/13/20/33/66). Beats coast @7/@13, loses to sim overall. Needs capacity
+  (2L/d64?) or more epochs. Corrector verdict: promising near-field refiner,
+  not a champion (yet).
+- C++ (unbuilt): HitChanceML toggle (Vars.h + Menu.cpp) + veto gates at direct
+  + splash record sites in CanHit (main path only; redirect path untouched),
+  stub-pass-through (conf 1.0) -> zero behavior change until value head lands.
+- Machine notes: shells get killed constantly (user stops? watchdog?) but
+  CHILDREN SURVIVE as orphans -> launch-with-log + poll pattern works. 4AM wipe
+  killed everything incl. DB writer (resumed cleanly: per-demo commits).
+  Stop-Process -Id <my-own-pid> is safe (shell survives); never touch others' PIDs.

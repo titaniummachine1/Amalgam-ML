@@ -119,7 +119,7 @@ struct BehaviorPrediction_t
 {
 	Vec3 m_vAccel = {};      // policy head: expected acceleration this tick (world units/tick^2, egocentric)
 	Vec3 m_vPredicted = {};  // integrated world position at this rollout step (origin_T + R^T * p_ego)
-	float m_flConfidence = 1.f; // value head 0..1: this rollout is what's gonna happen. Gate release on it.
+	float m_flConfidence = 1.f; // value head 0..1 (ml/value_denseE.py): P(hit) at this step's horizon
 };
 
 class CBehaviorPrediction
@@ -170,8 +170,8 @@ public:
 	// WSLOT). Maps a live ETFClassID to (slot, class/16). Unknown -> (-1, 0).
 	static void WeaponFeat(int iClsID, int* pSlot, float* pCls);
 	// Roll out up to iTicks ahead (cap 132). Writes per-step accel (ego hu/s^2)
-	// into pOut, returns steps written. Confidence is 1.0 until the value head
-	// lands (phase 2); gate on policy only until then.
+	// into pOut, returns steps written. Confidence = value-head P(hit) at the
+	// step's horizon bucket (falls back to 1.0 if value weights missing).
 	// m_iBudget = how many ranked targets get full prediction per tick.
 	int Predict(int iEntIndex, int iTicks, BehaviorPrediction_t* pOut, int iMaxOut);
 	int m_iBudget = 1;
@@ -191,7 +191,15 @@ private:
 	float m_Bhh[3 * 96] = {};
 	float m_HeadW[2 * 96] = {};
 	float m_HeadB[2] = {};
+	// value head (ml/value_denseE.py, MLP 101->32->5): P(hit @24hu) at
+	// [7,13,20,33,66] ticks. Dequantized once; per-step confidence buckets.
+	float m_VW1[32 * 101] = {};
+	float m_VB1[32] = {};
+	float m_VW2[5 * 32] = {};
+	float m_VB2[5] = {};
+	bool m_bValueReady = false;
 	void EnsureWeights();
+	void EnsureValueWeights();
 };
 
 ADD_FEATURE(CBehaviorPrediction, BehaviorPrediction);

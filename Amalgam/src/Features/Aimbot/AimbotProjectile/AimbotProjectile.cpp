@@ -1694,6 +1694,17 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 		}
 	}
 	int iBehavStep = 0;
+	// ML hitchance: veto solution ticks whose rollout confidence (0..1, value
+	// head; 1.0 stub until it lands) falls below the HitChance slider. Default
+	// off and stub-pass-through: zero behavior change until enabled + landed.
+	auto flBehavConf = [&](int iStep) -> float
+	{
+		if (!bUseBehav || iBehavN <= 0) return 1.f;
+		iStep = std::clamp(iStep, 0, iBehavN - 1);
+		return tBehav[iStep].m_flConfidence;
+	};
+	const bool bMLGate = bUseBehav && Vars::Aimbot::Projectile::HitChanceML.Value
+		&& Vars::Aimbot::Projectile::HitChance.Value > 0.f;
 	for (int i = 1 - TIME_TO_TICKS(m_tInfo.m_flLatency); i <= iMaxTime; i++)
 	{
 		if (!m_tMoveStorage.m_bFailed)
@@ -1740,6 +1751,9 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 			default: end:
 				CalculateAngle(m_tInfo.m_vLocalEye, vPoint, i, tSolution, iFlags, iTolerance);
 			}
+			if (tSolution.m_iCalculated == CalculateResultEnum::Good && bMLGate
+				&& flBehavConf(iBehavStep - 1) * 100.f < Vars::Aimbot::Projectile::HitChance.Value)
+				tSolution.m_iCalculated = CalculateResultEnum::Bad;
 			switch (tSolution.m_iCalculated)
 			{
 			case CalculateResultEnum::Good:
@@ -1782,6 +1796,11 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 				continue;
 			}
 
+			if (bMLGate && flBehavConf(iBehavStep - 1) * 100.f < Vars::Aimbot::Projectile::HitChance.Value)
+			{
+				it = vSplashes.erase(it);
+				continue;
+			}
 			mSplashHistory[*it].emplace_back(History_t(tTarget.m_vPos, i), fabsf(flTimeTo));
 			++it;
 		}

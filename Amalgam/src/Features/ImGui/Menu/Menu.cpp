@@ -311,6 +311,7 @@ void CMenu::MenuAimbot(int iTab)
 					}
 					PopTransparent();
 					FToggle(Vars::Aimbot::Projectile::BehaviorPrediction, FToggleEnum::Left);
+					FToggle(Vars::Aimbot::Projectile::HitChanceML, FToggleEnum::Right);
 				} EndSection();
 				if (Vars::Debug::Options.Value)
 				{

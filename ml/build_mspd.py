@@ -40,7 +40,7 @@ CLS_OF_MSPD = {400.0: 1, 300.0: 2, 240.0: 3, 280.0: 4, 320.0: 8, 230.0: 6}
 
 
 PLAYER_COLS = ("tick,ent,class,ox,oy,oz,vx,vy,vz,eyep,eyey,mspd,"
-               "flags,health,life,team,fresh").split(',')
+               "flags,health,life,team,fresh,wcls,w0,w1,w2").split(',')
 
 
 def load_mspd(demo_base, ents):

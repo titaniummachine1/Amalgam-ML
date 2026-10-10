@@ -1,5 +1,6 @@
 #include "BehaviorPrediction.h"
 #include "weights_soldier_denseE.h"
+#include "weights_value_denseE.h"
 
 #include <cmath>
 #include <cstring>
@@ -117,6 +118,22 @@ void CBehaviorPrediction::EnsureWeights()
 	deq(BehaviorPolicy::kW_head_weight, m_HeadW, sizeof(m_HeadW) / sizeof(float), BehaviorPolicy::kScale_head_weight);
 	deq(BehaviorPolicy::kW_head_bias, m_HeadB, sizeof(m_HeadB) / sizeof(float), BehaviorPolicy::kScale_head_bias);
 	m_bWeightsReady = true;
+}
+
+void CBehaviorPrediction::EnsureValueWeights()
+{
+	if (m_bValueReady)
+		return;
+	const auto deq = [](const int8_t* q, float* f, size_t n, float s)
+	{
+		for (size_t i = 0; i < n; i++)
+			f[i] = float(q[i]) * s;
+	};
+	deq(BehaviorValue::kW_mlp_0_weight, m_VW1, sizeof(m_VW1) / sizeof(float), BehaviorValue::kScale_mlp_0_weight);
+	deq(BehaviorValue::kW_mlp_0_bias, m_VB1, sizeof(m_VB1) / sizeof(float), BehaviorValue::kScale_mlp_0_bias);
+	deq(BehaviorValue::kW_mlp_2_weight, m_VW2, sizeof(m_VW2) / sizeof(float), BehaviorValue::kScale_mlp_2_weight);
+	deq(BehaviorValue::kW_mlp_2_bias, m_VB2, sizeof(m_VB2) / sizeof(float), BehaviorValue::kScale_mlp_2_bias);
+	m_bValueReady = true;
 }
 
 void CBehaviorPrediction::PushState(int iEntIndex, const Vec3& vOrigin, float flEyeYawDeg, bool bGrounded, int iClass, int iWeaponDef, int iWeaponClsID, int iWLd0ClsID, int iWLd1ClsID, int iWLd2ClsID)
@@ -443,6 +460,10 @@ int CBehaviorPrediction::Predict(int iEntIndex, int iTicks, BehaviorPrediction_t
 		memcpy(h, hn, sizeof(h));
 	}
 	memcpy(st.m_flHidden, h, sizeof(h)); // seed for future incremental update
+	// value-head inputs need the POST-warmup hidden (rollout mutates h below)
+	float hWarm[kHid] = {};
+	memcpy(hWarm, h, sizeof(h));
+	EnsureValueWeights();
 
 	// rollout: accel head -> integrate (ego hu), feedback mirrors training unroll
 	const int nSteps = iTicks < iMaxOut ? iTicks : iMaxOut;
@@ -467,6 +488,7 @@ int CBehaviorPrediction::Predict(int iEntIndex, int iTicks, BehaviorPrediction_t
 	const float flOzT = st.m_flPos[iTc][2];
 	const float flC = cosf(flYawRad), flS = sinf(flYawRad);
 	float flPx = 0.f, flPy = 0.f;
+	float flAccMaxSum = 0.f; // value stat: mean over steps of max(|accx|,|accy|)
 	int written = 0;
 	for (int s = 0; s < nStepsC; s++)
 	{
@@ -478,6 +500,16 @@ int CBehaviorPrediction::Predict(int iEntIndex, int iTicks, BehaviorPrediction_t
 		}
 		acc[0] *= flMaxV;
 		acc[1] *= flMaxV; // ego hu/s^2
+		{
+			const float flA0 = acc[0] < 0.f ? -acc[0] : acc[0];
+			const float flA1 = acc[1] < 0.f ? -acc[1] : acc[1];
+			flAccMaxSum += flA0 > flA1 ? flA0 : flA1;
+		}
+		{
+			const float a0 = acc[0] < 0.f ? -acc[0] : acc[0];
+			const float a1 = acc[1] < 0.f ? -acc[1] : acc[1];
+			flAccMaxSum += a0 > a1 ? a0 : a1;
+		}
 		// per-state clamp: training labels impulse-split knockbacks (external force,
 		// not input), so the net never legitimately exceeds these. Ground input caps
 		// at ~accel(10)*wishspeed + friction residual ~= 14*MAXV; air is small.
@@ -557,6 +589,43 @@ int CBehaviorPrediction::Predict(int iEntIndex, int iTicks, BehaviorPrediction_t
 			hn2[j] = (1.f - z) * nn + z * h[j];
 		}
 		memcpy(h, hn2, sizeof(h));
+	}
+	// value head (ml/value_denseE.py): P(hit @24hu) at [7,13,20,33,66] ticks.
+	// feats = warmup hidden (96) + [ep_dist/1000, ep_sp/1000, meana/2000,
+	// grounded, horizon_T=1.0]. Per-step confidence = nearest horizon bucket.
+	if (written > 0 && m_bValueReady)
+	{
+		float vin[101] = {};
+		memcpy(vin, hWarm, sizeof(hWarm));
+		const float flEpDist = sqrtf(flPx * flPx + flPy * flPy);
+		const float flEpSp = sqrtf(v0x * v0x + v0y * v0y);
+		vin[96] = flEpDist / 1000.f;
+		vin[97] = flEpSp / 1000.f;
+		vin[98] = (flAccMaxSum / (float)written) / 2000.f;
+		vin[99] = grLast;
+		vin[100] = 1.f;
+		float vhid[32] = {};
+		for (int j = 0; j < 32; j++)
+		{
+			float s = m_VB1[j];
+			for (int k = 0; k < 101; k++)
+				s += vin[k] * m_VW1[j * 101 + k];
+			vhid[j] = s > 0.f ? s : 0.f;
+		}
+		float flP[5] = {};
+		for (int j = 0; j < 5; j++)
+		{
+			float s = m_VB2[j];
+			for (int k = 0; k < 32; k++)
+				s += vhid[k] * m_VW2[j * 32 + k];
+			flP[j] = Sigmoid(s);
+		}
+		for (int s = 0; s < written; s++)
+		{
+			const int tick = s + 1;
+			const int b = tick <= 7 ? 0 : tick <= 13 ? 1 : tick <= 20 ? 2 : tick <= 33 ? 3 : 4;
+			pOut[s].m_flConfidence = flP[b];
+		}
 	}
 	return written;
 }
