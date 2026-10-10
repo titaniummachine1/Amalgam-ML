@@ -9,6 +9,7 @@
 #include "AutoRocketJump/AutoRocketJump.h"
 #include "../Misc/Misc.h"
 #include "../Visuals/Visuals.h"
+#include "../AntiCheatCompatibility/AntiCheatCompatibility.h"
 
 bool CAimbot::ShouldRun(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
@@ -82,6 +83,20 @@ void CAimbot::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 	RunMain(pLocal, pWeapon, pCmd);
 
 	G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);
+	// Manual shot/swing the aimbot didn't steer: shift tick_count onto the
+	// backtrack record under the crosshair. Gated off aim-steered ticks
+	// (AimTarget stamped this tick), anticheat, and kart so trickstab/warp
+	// and crit logic keep tick ownership when they ran.
+	if (G::Attacking == 1
+		&& G::AimTarget.m_iTickCount != I::GlobalVars->tickcount
+		&& !F::AntiCheatCompatibility.Active()
+		&& pLocal->IsAlive() && !pLocal->IsAGhost() && !pLocal->InCond(TF_COND_HALLOWEEN_KART))
+	{
+		if (G::PrimaryWeaponType == EWeaponType::HITSCAN)
+			F::AimbotHitscan.BacktrackToCrosshair(pCmd);
+		else if (G::PrimaryWeaponType == EWeaponType::MELEE)
+			F::AimbotMelee.BacktrackToCrosshair(pLocal, pCmd);
+	}
 }
 
 void CAimbot::Draw(CTFPlayer* pLocal)

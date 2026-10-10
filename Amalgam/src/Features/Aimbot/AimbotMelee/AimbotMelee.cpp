@@ -2,6 +2,7 @@
 
 #include "../Aimbot.h"
 #include "AutoTrickstab.h"
+#include "../AutoRocketJump/AutoRocketJump.h"
 #include "../../../SDK/VarsMelee.h"
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
 #include "../../EnginePrediction/EnginePrediction.h"
@@ -12,6 +13,7 @@
 
 static constexpr float kChargeReachDistance = 128.f;
 static constexpr float kCritRefillCombatDistance = 500.f;
+static constexpr float kCritRefillSafeDistance = 700.f;
 
 static inline bool AimFriendlyBuilding(CBaseObject* pBuilding)
 {
@@ -35,8 +37,14 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 	const Vec3 vLocalPos = F::Ticks.GetShootPos();
 	const Vec3 vLocalAngles = I::EngineClient->GetViewAngles();
 
-	// Rage killaura: no FOV culling anywhere below, hittability decides.
-	const bool bRage = Vars::Aimbot::Melee::Rage.Value;
+	// Rage killaura / trickstab commit: no FOV culling anywhere below,
+	// hittability decides. Seeded straight from the center so the no-FOV
+	// path never reads uninitialized FOV-function outputs (bone lookup
+	// yields nothing when records are missing) and skips the per-enemy
+	// bone loop. A latched trickstab commit counts as no-FOV so a small
+	// AimFOV can never starve the exec target and break the stab.
+	const bool bNoFov = Vars::Aimbot::Melee::Rage.Value
+		|| F::AutoTrickstab.IsCommitting();
 
 	if (Vars::Aimbot::General::Target.Value & Vars::Aimbot::General::TargetEnum::Players)
 	{
@@ -51,7 +59,13 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 				continue;
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.PlayerBoneInFOV(pEntity->As<CTFPlayer>(), vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo) && !bRage)
+			if (bNoFov)
+			{
+				vPos = pEntity->GetCenter();
+				vAngleTo = Math::CalcAngle(vLocalPos, vPos);
+				flFOVTo = Math::CalcFov(vLocalAngles, vAngleTo);
+			}
+			else if (!F::AimbotGlobal.PlayerBoneInFOV(pEntity->As<CTFPlayer>(), vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
 				continue;
 
 			float flDistTo = vLocalPos.DistToSqr(vPos);
@@ -80,7 +94,13 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 				continue;
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo) && !bRage)
+			if (bNoFov)
+			{
+				vPos = pEntity->GetCenter();
+				vAngleTo = Math::CalcAngle(vLocalPos, vPos);
+				flFOVTo = Math::CalcFov(vLocalAngles, vAngleTo);
+			}
+			else if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
 				continue;
 
 			int iPriority = 0;
@@ -111,7 +131,13 @@ static inline std::vector<Target_t> GetTargets(CTFPlayer* pLocal, CTFWeaponBase*
 				continue;
 
 			float flFOVTo; Vec3 vPos, vAngleTo;
-			if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo) && !bRage)
+			if (bNoFov)
+			{
+				vPos = pEntity->GetCenter();
+				vAngleTo = Math::CalcAngle(vLocalPos, vPos);
+				flFOVTo = Math::CalcFov(vLocalAngles, vAngleTo);
+			}
+			else if (!F::AimbotGlobal.EntityCenterInFOV(pEntity, vLocalPos, vLocalAngles, flFOVTo, vPos, vAngleTo))
 				continue;
 
 			float flDistTo = vLocalPos.DistToSqr(vPos);
@@ -383,6 +409,12 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 	if (Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Unsimulated && H::Entities.GetChoke(tTarget.m_pEntity->entindex()) > Vars::Aimbot::General::TickTolerance.Value)
 		return false;
 
+	// No-FOV aim: rage killaura or a latched trickstab commit. Same
+	// condition as target selection so the exec target always flows
+	// through and the stab can't be starved by a small AimFOV.
+	const bool bNoFov = Vars::Aimbot::Melee::Rage.Value
+		|| F::AutoTrickstab.IsCommitting();
+
 	float flRange = SDK::AttribHookValue(m_flRange, "melee_range_multiplier", pWeapon);
 	float flHull = SDK::AttribHookValue(18, "melee_bounds_multiplier", pWeapon);
 	if (pLocal->m_flModelScale() > 1.0f)
@@ -443,8 +475,8 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 	const Vec3 vSelectAngle = tTarget.m_vAngleTo; // selection (bone) angle, pre-clamp
 	// Record-independent gate: hoisted (identical outcome, runs once).
 	// The clamp point on steep geometry can sit outside AimFOV while the
-	// target is hittable. Rage skips it.
-	if (!Vars::Aimbot::Melee::Rage.Value && !F::AimbotGlobal.ShouldAimAtAngle(vSelectAngle))
+	// target is hittable. No-FOV aim skips it.
+	if (!bNoFov && !F::AimbotGlobal.ShouldAimAtAngle(vSelectAngle))
 		return false;
 	const Vec3 vViewAngles = G::CurrentUserCmd->viewangles;
 	const bool bKnifeStab = Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID() == TF_WEAPON_KNIFE;
@@ -553,7 +585,7 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 			{
 				const Vec3 vPoint = pRecord->m_vOrigin + (pRecord->m_vMins + pRecord->m_vMaxs) * flMod;
 				const Vec3 vAngle = Math::CalcAngle(vExecEye, vPoint);
-				if (!Vars::Aimbot::Melee::Rage.Value && !F::AimbotGlobal.ShouldAimAtAngle(vAngle))
+				if (!bNoFov && !F::AimbotGlobal.ShouldAimAtAngle(vAngle))
 					continue;
 
 				Vec3 vForward; Math::AngleVectors(vAngle, &vForward);
@@ -743,6 +775,54 @@ static inline void DrawVisuals(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserC
 	}
 }
 
+std::pair<float, float> CAimbotMelee::GetClosestRecord(std::vector<TickRecord*> vRecords)
+{
+	float flSimTime = -1.f;
+	float flMaxDist = 300.f;
+	for (auto pRecord : vRecords)
+	{
+		float flDist = pRecord->m_vOrigin.DistTo(m_vEyePos);
+		if (flDist < flMaxDist)
+		{
+			flMaxDist = flDist;
+			flSimTime = pRecord->m_flSimTime;
+		}
+	}
+	return { flMaxDist, flSimTime };
+}
+
+void CAimbotMelee::BacktrackToCrosshair(CTFPlayer* pLocal, CUserCmd* pCmd)
+{
+	float flBestSimTime = -1.f;
+	float flMaxDist = 300.f;
+	m_vEyePos = pLocal->GetShootPos();
+	for (auto pEntity : H::Entities.GetGroup(EntityEnum::PlayerEnemy))
+	{
+		if (!pEntity->As<CTFPlayer>()->IsAlive()
+			|| pEntity->As<CTFPlayer>()->IsAGhost()
+			|| pEntity->As<CTFPlayer>()->IsInvulnerable()
+			|| pEntity->GetAbsOrigin().DistTo(m_vEyePos) > 1000.f)
+			continue;
+
+		std::vector<TickRecord*> vRecords;
+		if (!F::Backtrack.GetRecords(pEntity, vRecords))
+			continue;
+
+		vRecords = F::Backtrack.GetValidRecords(vRecords);
+		auto tInfo = GetClosestRecord(vRecords);
+		if (tInfo.first < flMaxDist)
+		{
+			flBestSimTime = tInfo.second;
+			flMaxDist = tInfo.first;
+		}
+	}
+
+	if (flBestSimTime == -1.f)
+		return;
+
+	pCmd->tick_count = TIME_TO_TICKS(flBestSimTime + F::Backtrack.GetFakeInterp());
+}
+
 void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
 	// Auto trickstab warp-fan viz (phase 1: simulate + draw only, no writes).
@@ -766,22 +846,21 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 			{
 				m_iChargeTicks++;
 				const int iTicksToSmack = TIME_TO_TICKS(std::max(pWeapon->m_flSmackTime() - I::GlobalVars->curtime, 0.f));
-				// Full smack length for the count-based trigger below.
+				// Full smack length for the elapsed-since-swing math below.
 				const int iSmackFull = GetSwingTime(pWeapon, false);
-				// Timing law (qawe-faithful): Early = 2 ticks after swing
-				// start (swing registered first); Late = 2 ticks before
-				// smack lands. Both go through the aim snap below.
+				// Smack-domain trigger (qawe-faithful): Early = 2 ticks after
+				// swing start; Late = 2 ticks before smack lands. The countdown
+				// advances with EXECUTED game time, so press-tick dumps and
+				// fakelag bursts can't desync it the way hook-run counting
+				// could (a dump collapses the whole window into one observation
+				// and the old counter never reached Early's press tick: the
+				// "Early breaks charges" bug). Smack already landed is handled
+				// by the outer gate (aborts, saves the meter).
 				const bool bEarly = Vars::Aimbot::Melee::ChargeTiming.Value == Vars::Aimbot::Melee::ChargeTimingEnum::Early;
-				const int iPressAt = bEarly ? 2 : std::max(iSmackFull - 2, 1);
-				// Compressed time (dump executed/armed/executing): counts run
-				// faster than observations, so snap now, press next tick.
-				const bool bSmackJumped = m_flLastSmackTime == pWeapon->m_flSmackTime()
-					&& m_iLastSmackTicks - iTicksToSmack > 1;
-				m_flLastSmackTime = pWeapon->m_flSmackTime();
-				m_iLastSmackTicks = iTicksToSmack;
-				const bool bCompressed = bSmackJumped || F::Ticks.m_bWarp
-					|| (F::Ticks.m_bDoubletap && F::Ticks.GetTicks(pWeapon) > 0);
-				if (m_iChargeTicks >= iPressAt || bCompressed)
+				const bool bPressNow = bEarly
+					? (iSmackFull - iTicksToSmack >= 2)
+					: (iTicksToSmack <= 2);
+				if (bPressNow)
 					m_eChargeState = ChargeState::Aim;
 				else if (m_iChargeTicks > 25)
 				{
@@ -807,18 +886,41 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 			}
 			break;
 		case ChargeState::Charge:
+			// One-shot press: mark consumed but HOLD the state one extra tick
+			// so shift drivers (Doubletap/Warp, gated on busy) can't start a
+			// fresh shift on the press tick and steal the tailored goal below.
+			if (m_iChargeTarget == -1)
+			{
+				m_eChargeState = ChargeState::Idle;
+				break;
+			}
 			pCmd->buttons |= IN_ATTACK2;
 			G::SendPacket = true;
-			m_eChargeState = ChargeState::Idle;
-			m_iChargeTarget = -1;
+			// Collapse the remaining smack delay into the fresh charge: the
+			// swing tail rides the shift, impact lands instantly mid-charge,
+			// ranged. The press block can't run now (smack in flight), so
+			// without this explicit latch the ride-along never fires. Never
+			// inside a warp/stab commit: the commit owns the goal.
+			if (!F::Ticks.m_bDoubletap && F::Ticks.GetTicks(pWeapon) > 0 && !F::AutoTrickstab.IsCommitting())
+			{
+				const int iTicksToSmack = TIME_TO_TICKS(std::max(pWeapon->m_flSmackTime() - I::GlobalVars->curtime, 0.f));
+				F::Ticks.m_bDoubletap = true;
+				F::Ticks.m_iShiftedGoal = F::Ticks.ReleaseGoal(std::max(iTicksToSmack, 1));
+			}
+			m_iChargeTarget = -1; // consumed; state stays Charge one extra tick
 			break;
 		case ChargeState::Idle:
 		default:
 			break;
 		}
 	}
-	else if (pWeapon->m_flSmackTime() <= 0.f)
+	else if (pWeapon->m_flSmackTime() <= 0.f
+		|| !Vars::Aimbot::Melee::ChargeReach.Value
+		|| pLocal->m_iClass() != TF_CLASS_DEMOMAN)
 	{
+		// Full reset: no live sequence without the toggle, the class, and
+		// a swing in flight. Otherwise a mid-track toggle-off strands a
+		// busy state that suppresses every future instant swing.
 		m_eChargeState = ChargeState::Idle;
 		m_iChargeTarget = -1;
 	}
@@ -828,10 +930,13 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 	// delay fits the available dump, shift through the tail so the smack
 	// lands instantly. Self-limiting: the dump consumes the bank below the
 	// condition. Skips trivial tails; Doubletap() validates downstream.
+	// Stood down while a charge is sequenced: a fresh dump mid-track
+	// collapses the swing window the sequence was timed against. The
+	// Charge-press tick latches its own window-sized collapse instead.
 	if (pWeapon->m_flSmackTime() > 0.f)
 	{
 		const int iTicksToSmack = TIME_TO_TICKS(std::max(pWeapon->m_flSmackTime() - I::GlobalVars->curtime, 0.f));
-		if (iTicksToSmack >= 2 && iTicksToSmack <= F::Ticks.GetTicks(pWeapon))
+		if (iTicksToSmack >= 2 && iTicksToSmack <= F::Ticks.GetTicks(pWeapon) && !IsChargeBusy())
 			F::Ticks.m_bDoubletap = true;
 	}
 
@@ -846,7 +951,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 	if (F::AimbotGlobal.ShouldHoldAttack(pWeapon))
 		pCmd->buttons |= IN_ATTACK;
 	if (!Vars::Aimbot::General::AimType.Value
-		|| !Vars::Aimbot::Melee::Rage.Value && !F::AimbotGlobal.ShouldAim() && pWeapon->m_flSmackTime() < 0.f)
+		|| !Vars::Aimbot::Melee::Rage.Value && !F::AutoTrickstab.IsCommitting() && !F::AimbotGlobal.ShouldAim() && pWeapon->m_flSmackTime() < 0.f)
 		return;
 
 	if (RunSapper(pLocal, pWeapon, pCmd))
@@ -863,6 +968,21 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 
 	// Crit refill gating: only farm when no close simulated combat exists.
 	bool bHasCombatSimulation = false;
+	// Plain distance safety first: any live, transmitted enemy within 700u
+	// blocks the refill even when nothing was simulated yet (fresh fight,
+	// culled targets), so farming never kicks in mid-fight. Dormant
+	// enemies are skipped (stale origins would block forever).
+	for (auto pEntity : H::Entities.GetGroup(EntityEnum::PlayerEnemy))
+	{
+		auto pEnemy = pEntity->As<CTFPlayer>();
+		if (!pEnemy || !pEnemy->IsAlive() || pEnemy->IsAGhost() || pEnemy->IsDormant())
+			continue;
+		if (pLocal->GetAbsOrigin().DistTo(pEnemy->GetAbsOrigin()) <= kCritRefillSafeDistance)
+		{
+			bHasCombatSimulation = true;
+			break;
+		}
+	}
 	for (const auto& tTarget : vTargets)
 	{
 		if (tTarget.m_pEntity->m_iTeamNum() == pLocal->m_iTeamNum())
@@ -888,14 +1008,24 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 	}
 	F::CritHack.m_bCritRefillActive = false;
 
-	auto ArmChargeTracking = [&](const Target_t& tTarget)
+	// Charge-ready predicate (target-free half of the arm gate): lets the
+	// press-tick dump stand down BEFORE Tracking arms, while the swing is
+	// still decided. Evaluated at call time (captures by ref). Also excludes
+	// a latched trickstab commit (mutual exclusion: the commit owns movement
+	// and the warp would collapse the track window either way).
+	auto ChargeWillArm = [&]() -> bool
 	{
-		if ((pCmd->buttons & IN_ATTACK) && G::CanPrimaryAttack && pWeapon->m_flSmackTime() < 0.f
+		return (pCmd->buttons & IN_ATTACK) && G::CanPrimaryAttack && pWeapon->m_flSmackTime() < 0.f
 			&& Vars::Aimbot::Melee::ChargeReach.Value
 			&& pLocal->m_iClass() == TF_CLASS_DEMOMAN
 			&& pLocal->m_flChargeMeter() >= 100.f
 			&& !pLocal->InCond(TF_COND_SHIELD_CHARGE)
-			&& m_eChargeState == ChargeState::Idle)
+			&& m_eChargeState == ChargeState::Idle
+			&& (!(F::AutoTrickstab.IsCommitting() && !F::AutoTrickstab.IsWarpDirect()));
+	};
+	auto ArmChargeTracking = [&](const Target_t& tTarget)
+	{
+		if (ChargeWillArm())
 		{
 			m_eChargeState = ChargeState::Tracking;
 			m_iChargeTicks = 0;
@@ -938,10 +1068,18 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 				m_iSwingHoldTick = 0;
 			if (bPress)
 				pCmd->buttons |= IN_ATTACK;
-			// Orchestrated dump: on the exact charge-press tick (Charge state)
-			// ride the shift when banked so swing+charge go out together;
-			// force-send covers the unbanked case.
-			if (m_iDoubletapTicks && (!IsChargeBusy() || m_eChargeState == ChargeState::Charge))
+			// Melee dump policy: bank >= smack window suffices (generic
+			// GetTicks demands TickLimit and m_iWait refuses chained swings,
+			// so banked re-presses would never go instant). No dump on a
+			// charge-arming press: the swing then plays in normal time so
+			// the sequence counts deterministically; impact still lands
+			// instantly via the Charge-press collapse above.
+			const bool bDumpUsable = Vars::Doubletap::Doubletap.Value
+				&& !F::Ticks.m_bWarp && !F::Ticks.m_bRecharge && !F::Ticks.m_bSpeedhack
+				&& !F::AutoRocketJump.IsRunning();
+			const bool bDumpReady = m_iDoubletapTicks > 0
+				|| (F::Ticks.m_iShiftedTicks >= m_iSwingTicks && bDumpUsable);
+			if (bDumpReady && !ChargeWillArm() && !IsChargeBusy())
 				F::Ticks.m_bDoubletap = true;
 		}
 
@@ -950,7 +1088,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		if (G::Attacking == 1)
 		{
 			if (tTarget.m_bBacktrack)
-				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp());
+				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime + F::Backtrack.GetFakeInterp());
 			// bug: fast old records seem to be progressively more unreliable ?
 		}
 		else
@@ -977,6 +1115,29 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		}
 		break;
 	}
+	// Auto-warp press (Normal: with the claim; Full: arrival solved the same
+	// way, server resolves the smack inside stopped time). Additive only,
+	// after the hold logic so banking never vetoes it. Stamps AimTarget so
+	// crosshair-backtrack yields the tick the claim already set.
+	if (F::AutoTrickstab.WarpPressDue() && G::CanPrimaryAttack && pWeapon->m_flSmackTime() < 0.f)
+	{
+		pCmd->buttons |= IN_ATTACK;
+		G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);
+		G::AimTarget = { F::AutoTrickstab.WarpEnt(), I::GlobalVars->tickcount, 0 };
+		G::AimPoint = { F::AutoTrickstab.WarpDest() + pLocal->m_vecViewOffset(), I::GlobalVars->tickcount };
+		if (F::AutoTrickstab.WarpWantsCharge())
+			ArmChargeForWarp(pCmd, F::AutoTrickstab.WarpEnt());
+	}
+}
+
+void CAimbotMelee::ArmChargeForWarp(CUserCmd* pCmd, int iEntIndex)
+{
+	if (m_eChargeState != ChargeState::Idle)
+		return;
+	m_eChargeState = ChargeState::Tracking;
+	m_iChargeTicks = 0;
+	m_iChargeTarget = iEntIndex;
+	m_vChargeAim = pCmd->viewangles;
 }
 
 static inline int GetAttachment(CBaseObject* pBuilding, int i)

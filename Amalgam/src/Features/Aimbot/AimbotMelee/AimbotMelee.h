@@ -46,9 +46,17 @@ private:
 
 public:
 	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
+	// Manual swings: shift tick_count onto the closest valid record so
+	// un-aimed hits still land on lag-compensated history.
+	void BacktrackToCrosshair(CTFPlayer* pLocal, CUserCmd* pCmd);
+private:
+	std::pair<float, float> GetClosestRecord(std::vector<TickRecord*> vRecords);
+public:
 	// Charge-reach tracking/charge in flight: DT/warp must stand down or the
 	// IN_ATTACK2 tick executes inside compressed shift-time (see Ticks).
 	bool IsChargeBusy() const { return m_eChargeState != ChargeState::Idle; }
+	// Arm charge tracking from a warp press (no aimbot target in hand).
+	void ArmChargeForWarp(CUserCmd* pCmd, int iEntIndex);
 };
 
 ADD_FEATURE(CAimbotMelee, AimbotMelee);

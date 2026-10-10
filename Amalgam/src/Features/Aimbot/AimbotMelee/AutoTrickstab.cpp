@@ -1,4 +1,5 @@
 #include "AutoTrickstab.h"
+#include "AimbotMelee.h"
 
 #include "../AimbotGlobal/AimbotGlobal.h"
 #include "../../Simulation/MovementSimulation/MovementSimulation.h"
@@ -467,15 +468,251 @@ void CAutoTrickstab::PlantMoves(CTFPlayer* pLocal, CUserCmd* pCmd, const Vec3& v
 		F::Misc.AutoStrafe(pLocal, pCmd);
 }
 
+// Direct-hit test for auto warp: hull trace from a sim eye against one body
+// position (live or record). Entity posed aside for the test and restored
+// after (CanHit idiom). No facing requirement: any damage counts.
+static bool WarpHitAt(const Vec3& vEye, CTFPlayer* pTarget, const Vec3& vFeet,
+	const Vec3& vMin, const Vec3& vMax, float flRange, const Vec3& vSwingMins,
+	const Vec3& vSwingMaxs, CTFPlayer* pLocal)
+{
+	Vec3 vRestoreOrigin = pTarget->GetAbsOrigin();
+	Vec3 vRestoreMins = pTarget->m_vecMins();
+	Vec3 vRestoreMaxs = pTarget->m_vecMaxs();
+
+	pTarget->SetAbsOrigin(vFeet);
+	pTarget->m_vecMins() = vMin + PLAYER_ORIGIN_COMPRESSION;
+	pTarget->m_vecMaxs() = vMax - PLAYER_ORIGIN_COMPRESSION;
+
+	const Vec3 vClamp = vEye.Clamp(vFeet + vMin, vFeet + vMax);
+	Vec3 vForward; Math::AngleVectors(Math::CalcAngle(vEye, vClamp), &vForward);
+	const Vec3 vTraceEnd = vEye + vForward * flRange;
+
+	CGameTrace trace = {};
+	CTraceFilterHitscan filter = {};
+	filter.pSkip = pLocal;
+	SDK::TraceHull(vEye, vTraceEnd, {}, {}, MASK_SOLID, &filter, &trace);
+	bool bHit = trace.m_pEnt == pTarget;
+	if (!bHit)
+	{
+		SDK::TraceHull(vEye, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
+		bHit = trace.m_pEnt == pTarget;
+	}
+
+	pTarget->SetAbsOrigin(vRestoreOrigin);
+	pTarget->m_vecMins() = vRestoreMins;
+	pTarget->m_vecMaxs() = vRestoreMaxs;
+	return bHit;
+}
+
+// Auto warp (non-knife melee): straight warp-to-hit. Walks at the target in
+// stopped time and claims the first tick a swing connects (live body, then
+// newest valid record). Normal takes the first connect (shortest warp);
+// Full walks the whole bank, takes the first connect (no waste), and holds
+// the swing until arrival-minus-smack so impact lands exactly on arrival. The
+// press rides the claim (end-of-Run override in the melee aimbot); the
+// server resolves the smack inside stopped time either way. No behind-cone,
+// no orbit, no warp-back. Compact with the stab claim: same latch (generic
+// Warp() yields to it), same honesty (bank covers exact length), same
+// recharge hold at release.
+void CAutoTrickstab::WarpDirect(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd,
+	const std::vector<CTFPlayer*>& vCands, float flRange, float flHull,
+	const Vec3& vSwingMins, const Vec3& vSwingMaxs, const Vec3& vMyPos, int iBank)
+{
+	(void)flHull;
+	// In-flight warp commit: chase the live target, aim at its eye, age out
+	// exactly like a stab claim (no bonus leg: no warp-back by design).
+	if (m_bCommitting && m_bWarpDirect)
+	{
+		auto pE = I::ClientEntityList->GetClientEntity(m_iWarpEnt);
+		CTFPlayer* pExec = (pE && !pE->IsDormant() && pE->As<CTFPlayer>()->IsAlive()) ? pE->As<CTFPlayer>() : nullptr;
+		if (!pExec)
+		{
+			m_bCommitting = false;
+			m_bWarpDirect = false;
+			m_iCommitLeft = 0;
+			m_iBonusLeft = 0;
+			m_iWarpEnt = -1;
+			F::Ticks.HoldRecharge(13, m_iClaimTick);
+			return;
+		}
+		const Vec3 vAim = Math::CalcAngle(pLocal->GetShootPos(), pExec->m_vecOrigin() + pExec->m_vecViewOffset());
+		pCmd->viewangles.x = vAim.x;
+		pCmd->viewangles.y = vAim.y;
+		Vec3 vDir = pExec->m_vecOrigin() - pLocal->m_vecOrigin();
+		vDir.z = 0.f;
+		if (vDir.Length2D() >= 1.f)
+		{
+			vDir.Normalize2D();
+			PlantMoves(pLocal, pCmd, vDir);
+		}
+		m_iCommitAge++;
+		if (!F::Ticks.m_bWarp || m_iCommitAge > 90)
+		{
+			m_bCommitting = false;
+			m_bWarpDirect = false;
+			m_iCommitLeft = 0;
+			m_iBonusLeft = 0;
+			m_iWarpEnt = -1;
+			F::Ticks.HoldRecharge(13, m_iClaimTick);
+		}
+		else if (m_iCommitLeft > 0)
+			m_iCommitLeft--;
+		return;
+	}
+	if (m_bCommitting)
+		return; // stab owns the latch (weapon-switch edge): hands off
+
+	if (F::AimbotMelee.IsChargeBusy() || F::Ticks.m_bWarp || F::Ticks.m_bDoubletap || F::Ticks.m_bSpeedhack)
+		return; // collapse it later, not mid-flight
+
+	const bool bFull = (Vars::Aimbot::Melee::AutoWarpMode.Value == Vars::Aimbot::Melee::AutoWarpModeEnum::Full);
+	const int iSmackTicks = std::max((int)ceilf(pWeapon->GetSmackDelay() / TICK_INTERVAL), 1);
+	// Charge assumption for sim speeds. The live machine arms off the warp
+	// press and fires ASAP in collapsed time, so both sides must agree:
+	// Early runs the whole window charged; Late charges the smack-2 tail
+	// inside the window, exactly like the live Timing law.
+	const bool bChargeSim = Vars::Aimbot::Melee::ChargeReach.Value
+		&& pLocal->m_iClass() == TF_CLASS_DEMOMAN
+		&& pLocal->m_flChargeMeter() >= 100.f
+		&& !pLocal->InCond(TF_COND_SHIELD_CHARGE);
+	const bool bChargeEarly = bChargeSim && (Vars::Aimbot::Melee::ChargeTiming.Value == Vars::Aimbot::Melee::ChargeTimingEnum::Early);
+	const float flWalk = SDK::MaxSpeed(pLocal);
+	const float flChargeSp = std::max(flWalk, 750.f);
+	const Vec3 vEyeOff = pLocal->m_vecViewOffset();
+	const Vec3 vOMin = pLocal->m_vecMins(), vOMax = pLocal->m_vecMaxs();
+	const int iWindow = bFull ? std::max(std::min(iBank, 32), 1) : iSmackTicks;
+	if (iBank < iWindow)
+		return; // bank must cover the exact length, both modes
+	int iWalked = 0;
+
+	CTFPlayer* pBestEnt = nullptr;
+	Vec3 vBestDest = {};
+	int iBestLen = -1;
+	float flBestSimTime = 0.f;
+	bool bFound = false;
+	for (CTFPlayer* pTarget : vCands)
+	{
+		if (bFound)
+			break; // nearest-first: first connect ends the scan
+		const Vec3 vTMin = pTarget->m_vecMins(), vTMax = pTarget->m_vecMaxs();
+		// Newest valid record for the rewind test (record-time truth).
+		const TickRecord* pRec = nullptr;
+		std::vector<TickRecord*> vRecs;
+		if (F::Backtrack.GetRecords(pTarget, vRecs))
+		{
+			vRecs = F::Backtrack.GetValidRecords(vRecs, nullptr);
+			if (!vRecs.empty() && !vRecs.front()->m_bInvalid)
+				pRec = vRecs.front();
+		}
+		Vec3 vSim = vMyPos;
+		Vec3 vStep = vSim;
+		CTraceFilterHitscan walkFilter = {};
+		walkFilter.pSkip = pLocal;
+		for (int t = 1; t <= iWindow; t++)
+		{
+			Vec3 vTo = pTarget->m_vecOrigin() - vSim;
+			vTo.z = 0.f;
+			const float flD = vTo.Length2D();
+			if (flD < 1.f)
+				break;
+			const bool bChargeTick = bChargeEarly || (bChargeSim && !bChargeEarly && t >= iSmackTicks - 2);
+			const float flSp = bChargeTick ? flChargeSp : flWalk;
+			vSim = vSim + (vTo * (1.f / flD)) * std::min(flSp * TICK_INTERVAL, flD);
+			// Wall-clip the segment (no engine sim here): a walk that ends
+			// at a wall can only claim hits with clean LOS anyway, and the
+			// trace below enforces exactly that.
+			CGameTrace wtr = {};
+			SDK::TraceHull(vStep, vSim, vOMin, vOMax, MASK_SOLID, &walkFilter, &wtr);
+			const bool bBlocked = wtr.fraction < 1.f && wtr.m_pEnt != pTarget;
+			vSim = wtr.endpos;
+			vStep = vSim;
+			vBestDest = vSim; // arrival tracks the walk (Full stops at its hit, Normal at window end)
+			const Vec3 vEye = vSim + vEyeOff;
+			bool bHit = WarpHitAt(vEye, pTarget, pTarget->m_vecOrigin(), vTMin, vTMax, flRange, vSwingMins, vSwingMaxs, pLocal);
+			bool bRec = false;
+			if (!bHit && pRec)
+				bHit = bRec = WarpHitAt(vEye, pTarget, pRec->m_vOrigin, pRec->m_vMins, pRec->m_vMaxs, flRange, vSwingMins, vSwingMaxs, pLocal);
+			iWalked = t; // walked ticks (wall ends the walk below, dest matches)
+			if (bHit && !bFound)
+			{
+				// First connect wins in both modes (no wasted ticks). Normal
+				// keeps walking the smack window for the arrival point below;
+				// Full stops here: length is this tick exactly.
+				bFound = true;
+				pBestEnt = pTarget;
+				iBestLen = t;
+				flBestSimTime = bRec ? pRec->m_flSimTime : pTarget->m_flSimulationTime();
+				vBestDest = vSim;
+				if (bFull)
+					break;
+			}
+			if (bBlocked)
+				break;
+		}
+	} // end candidate: later targets run only if none connected yet
+	if (!bFound || iBestLen <= 0)
+		return; // no hittable tick in the window
+	// Normal warps the whole smack window (fixed instant swing); Full warps
+	// exactly to the first connect. Both honest: walked ticks <= bank.
+	const int iLen = bFull ? iBestLen : iWalked;
+	if (iLen <= 0 || iLen > iBank)
+		return;
+
+	// Claim: shared latch (generic Warp() yields to it). No bonus: no warp-back.
+	m_bCommitting = true;
+	m_bWarpDirect = true;
+	m_iClaimTick = I::GlobalVars->tickcount;
+	m_iCommitLeft = iLen;
+	m_iCommitAge = 0;
+	m_iBonusLeft = 0;
+	m_iWarpEnt = pBestEnt->entindex();
+	m_vWarpDest = vBestDest;
+	m_bWarpCharge = bChargeSim;
+	m_iWarpPressAt = std::max(iLen - iSmackTicks, 0); // Normal 0 (up front); Full holds for arrival-minus-smack
+	F::Ticks.m_bWarp = true;
+	F::Ticks.m_iShiftedGoal = F::Ticks.ReleaseGoal(iLen);
+	F::Ticks.m_iShiftStart = F::Ticks.m_iShiftedTicks; // elapsed baseline: Move() rewrites it at drain
+	// Aim now (firing loop has no target pre-warp; keep angles ours) and
+	// stamp the rewind tick the swing resolves against. The press itself
+	// rides the end-of-Run override in the melee aimbot.
+	const Vec3 vAim = Math::CalcAngle(pLocal->GetShootPos(), pBestEnt->m_vecOrigin() + pBestEnt->m_vecViewOffset());
+	pCmd->viewangles.x = vAim.x;
+	pCmd->viewangles.y = vAim.y;
+	pCmd->tick_count = TIME_TO_TICKS(flBestSimTime + F::Backtrack.GetFakeInterp());
+
+	m_bHasBest = true;
+	m_bBestHittable = true;
+	m_iMinTicks = iLen;
+	m_vBestDir = vBestDest - vMyPos;
+	m_vBestDir.z = 0.f;
+	if (m_vBestDir.Length2D() >= 1.f)
+		m_vBestDir.Normalize2D();
+}
+
+bool CAutoTrickstab::WarpPressDue()
+{
+	// Press solver: Normal presses with the claim (pressAt 0, elapsed starts
+	// at 0 from the baseline stamped at claim); Full holds the swing until
+	// arrival-minus-smack of bank consumed, so impact lands exactly on
+	// arrival. True only while our warp owns the latch.
+	if (!m_bCommitting || !m_bWarpDirect)
+		return false;
+	return (F::Ticks.m_iShiftStart - F::Ticks.m_iShiftedTicks) >= m_iWarpPressAt;
+}
+
 void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
 	m_bHasBest = false;
 	m_bBestHittable = false;
 	m_iTotalPoints = 0;
 	m_iMinTicks = -1;
-	if (!Vars::Aimbot::Melee::AutoTrickstab.Value || !pLocal || !pWeapon || !pCmd)
+	if (!pLocal || !pWeapon || !pCmd)
 		return;
-	if (pWeapon->GetWeaponID() != TF_WEAPON_KNIFE)
+	// Auto warp rebrand: knife keeps the stab pipeline below; every other
+	// melee runs the direct warp-to-hit pipeline (own branch + claim).
+	// Toggles are independent so either behavior can run alone.
+	const bool bKnife = (pWeapon->GetWeaponID() == TF_WEAPON_KNIFE);
+	if (bKnife ? !Vars::Aimbot::Melee::AutoTrickstab.Value : !Vars::Aimbot::Melee::AutoWarp.Value)
 		return;
 	if (!pLocal->IsAlive())
 		return;
@@ -602,6 +839,13 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 	const Vec3 vSwingMaxs = { flHull, flHull, flHull };
 	const Vec3 vMyPos = pLocal->m_vecOrigin();
 	const float flOwnerYaw = pCmd->viewangles.y;
+	// Non-knife melee: direct warp-to-hit owns the rest of this tick (own
+	// planning + claim + replay). The stab pipeline below stays knife-only.
+	if (!bKnife)
+	{
+		WarpDirect(pLocal, pWeapon, pCmd, vCands, flRange, flHull, vSwingMins, vSwingMaxs, vMyPos, iBank);
+		return;
+	}
 	// Commit lifecycle + bonus run WITHOUT bank (bonus ticks are live-sent).
 	// Everything below this point is sim-bound: bank 0 -> fully idle.
 	if (m_bCommitting)
@@ -1473,7 +1717,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 				PlantMoves(pLocal, pCmd, s_vLastDir); // hold heading through the point
 		}
 	}
-	else if (bAssist && m_bHasBest && iBank > 0)
+	else if (bAssist && m_bHasBest && iBank > 0 && !F::AimbotMelee.IsChargeBusy())
 	{
 		// Manual A/D selects the assist side; no input = automatic side.
 		// Warp planning never sees this.
@@ -1536,7 +1780,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 		&& !F::Ticks.m_bWarp
 		&& !F::Ticks.m_bDoubletap && !F::Ticks.m_bSpeedhack
 		&& m_iTotalPoints >= 1 && iBank >= m_iMinTicks
-		&& pBestEnt)
+		&& pBestEnt && !F::AimbotMelee.IsChargeBusy())
 	{
 		// Behind-margin gate: the winning hit must sit clearly behind the
 		// foe (~60 deg cone, dot >= 0.5), never a side-window graze. Grazes

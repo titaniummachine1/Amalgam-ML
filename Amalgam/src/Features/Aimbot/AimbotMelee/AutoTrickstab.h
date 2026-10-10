@@ -65,6 +65,14 @@ private:
 public:
 	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
 	bool IsCommitting() const { return m_bCommitting; }
+	// Auto warp (non-knife melee): straight warp-to-hit sharing the commit
+	// latch below. Latch/audit members double for both modes; the stab-only
+	// path replay (orbit/behind) is bypassed for direct commits.
+	bool IsWarpDirect() const { return m_bWarpDirect; }
+	bool WarpPressDue();
+	int WarpEnt() const { return m_iWarpEnt; }
+	Vec3 WarpDest() const { return m_vWarpDest; }
+	bool WarpWantsCharge() const { return m_bWarpCharge; }
 
 	// Best direction this tick (assist steering + warp commit).
 	Vec3 m_vBestDir = {};
@@ -75,6 +83,14 @@ public:
 
 private:
 	bool m_bCommitting = false;
+	bool m_bWarpDirect = false; // direct warp-to-hit commit (no orbit/behind)
+	int m_iWarpEnt = -1;        // warp target (commit lock + press stamping)
+	Vec3 m_vWarpDest = {};      // warp arrival feet (travel goal)
+	bool m_bWarpCharge = false; // sim assumed charge speeds: live arm follows
+	int m_iWarpPressAt = 0;   // stopped-time ticks to hold the swing (Full; Normal 0)
+	void WarpDirect(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd,
+		const std::vector<CTFPlayer*>& vCands, float flRange, float flHull,
+		const Vec3& vSwingMins, const Vec3& vSwingMaxs, const Vec3& vMyPos, int iBank);
 	int m_iClaimTick = 0; // tickcount at claim (damage-since-claim check)
 	Vec3 m_vCommitDir = {}; // frozen at claim: warp steering ignores fresh
 	// selection AND manual input (assist positions, warp executes).

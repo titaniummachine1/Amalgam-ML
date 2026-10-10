@@ -45,6 +45,19 @@ const BufferedCmd_t* CPacketBuffer::Get(int iCommandNumber) const
 	return t.iCommandNumber == iCommandNumber ? &t : nullptr;
 }
 
+bool CPacketBuffer::PeekWantsChoke(CTFPlayer* pLocal) const
+{
+	if (!Vars::AutoPeek::FakePeek.Value || !m_bPeekPlaced)
+		return false;
+	if (!pLocal || pLocal->m_vecOrigin().DistTo2D(m_vPeekPivot) < 8.f)
+		return false; // home: nothing to hide
+	if (m_bPeekCommitted || m_bPeekReturning)
+		return false;
+	if (G::Attacking == 1)
+		return false; // shot: commit path force-sends anyway
+	return true;
+}
+
 // Fake peek driver (System A: causality). Decided per tick at CreateMove end:
 // - home/disabled: normal, clear peek state.
 // - out peeking, no shot: WITHHOLD (server keeps seeing pivot).
@@ -85,7 +98,8 @@ void CPacketBuffer::RunPeek(CTFPlayer* pLocal, CUserCmd* pCmd, bool* pSendPacket
 	}
 	else if (!m_bPeekCommitted && !m_bPeekReturning)
 	{
-		*pSendPacket = false;
+		// Withhold rides FakeLag now (PeekWantsChoke): no forced choke here,
+		// single choke owner. Track the run; abort caps below.
 		m_bPeekRun = true;
 		if (pLocal->m_vecOrigin().DistTo2D(m_vPeekPivot) > Vars::AutoPeek::FakePeekWindow.Value || m_iChokedRun > 22)
 			m_bPeekReturning = true; // abort latch: snap home, zero steering
@@ -138,9 +152,10 @@ void CPacketBuffer::RunPeek(CTFPlayer* pLocal, CUserCmd* pCmd, bool* pSendPacket
 
 // Standalone history drop: neutralize a withheld run in the engine queue so
 // the server never receives it — as if we never moved (causality overwrite,
-// not rubberband). Reusable core for future packet-domain work: pass any
-// [start, current) command span. Slot-guarded: never touches reused slots.
-static void DropChokedRun(int iRunStart, int iCommandNumber)
+// not rubberband). Moves zeroed (server keeps simulating us at the pivot),
+// viewangles restored to the pivot placement (as if we never looked out),
+// movement buttons cleared. Slot-guarded: never touches reused slots.
+void CPacketBuffer::DropChokedRun(int iRunStart, int iCommandNumber)
 {
 	for (int i = iRunStart; i < iCommandNumber; i++)
 	{
@@ -150,9 +165,11 @@ static void DropChokedRun(int iRunStart, int iCommandNumber)
 		if (!pEngine || !pVer || pEngine->command_number != i || pVer->m_cmd.command_number != i)
 			continue; // slot reused, never touch foreign ticks
 		pEngine->forwardmove = pEngine->sidemove = pEngine->upmove = 0.f;
-		pEngine->buttons &= ~(IN_DUCK | IN_JUMP);
+		pEngine->buttons &= ~(IN_DUCK | IN_JUMP | IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT);
+		pEngine->viewangles = m_vPeekPivotAng;
 		pVer->m_cmd.forwardmove = pVer->m_cmd.sidemove = pVer->m_cmd.upmove = 0.f;
-		pVer->m_cmd.buttons &= ~(IN_DUCK | IN_JUMP);
+		pVer->m_cmd.buttons &= ~(IN_DUCK | IN_JUMP | IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT);
+		pVer->m_cmd.viewangles = m_vPeekPivotAng;
 		pVer->m_crc = CRC32_ProcessSingleBuffer(&pVer->m_cmd, sizeof(CUserCmd));
 	}
 }

@@ -13,7 +13,11 @@ namespace Aimbot {
 			CVar(SwingPrediction, "Swing prediction", true);
 			CVar(WhipTeam, "Whip team", false);
 			CVar(Rage, "Rage", false);
-			CVar(AutoTrickstab, "Auto trickstab", false);
+			CVar(AutoTrickstab, "Auto warp trickstab", false);
+		CVar(AutoWarp, "Auto warp (melee)", false);
+		CVarEnum(AutoWarpMode, "Warp mode", 0, NONE, nullptr,
+			VA_LIST("Normal", "Full"),
+			Normal, Full);
 		CVar(TrickstabDraw, "Trickstab draw", true);
 		CVar(TrickstabAssist, "Trickstab assist", false);
 		CVarEnum(TrickstabSide, "Trickstab side", 1, NONE, nullptr,

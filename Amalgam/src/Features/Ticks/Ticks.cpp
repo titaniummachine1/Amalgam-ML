@@ -1,6 +1,7 @@
 #include "Ticks.h"
 #include "../../SDK/VarsMelee.h"
 #include "../Aimbot/AimbotMelee/AutoTrickstab.h"
+#include "../Aimbot/AimbotMelee/AimbotMelee.h"
 
 #include "../PacketManip/AntiAim/AntiAim.h"
 #include "../EnginePrediction/EnginePrediction.h"
@@ -116,6 +117,13 @@ void CTicks::Warp()
 	if (F::AutoTrickstab.IsCommitting())
 		return;
 
+	// Charge sequencing owns shift timing for melee: a warp mid-track
+	// veers the locked charge course and collapses the smack window the
+	// press was timed against. Stand down while busy (the extra-tick
+	// Charge hold keeps this shut through the press frame).
+	if (G::PrimaryWeaponType == EWeaponType::MELEE && F::AimbotMelee.IsChargeBusy())
+		return;
+
 	m_bWarp = false;
 	if (!Vars::Doubletap::Warp.Value
 		|| !m_iShiftedTicks || m_bDoubletap || m_bRecharge || m_bSpeedhack)
@@ -131,6 +139,19 @@ void CTicks::Doubletap(CTFPlayer* pLocal, CUserCmd* pCmd)
 		return;
 	if (!Vars::Doubletap::Doubletap.Value
 		|| m_iWait || m_bWarp || m_bRecharge || m_bSpeedhack)
+		return;
+
+	// Charge sequencing owns shift timing for melee: a fresh dump mid-track
+	// collapses the swing window (Early never reaches swing+2) and steals
+	// the tailored Charge-press goal. Melee sets its own flags directly
+	// (press-tick orchestration, Charge-press collapse); the driver only
+	// handles the plain Idle case.
+	if (G::PrimaryWeaponType == EWeaponType::MELEE && F::AimbotMelee.IsChargeBusy())
+		return;
+
+	// A latched warp/stab commit owns the goal (exact length wins): the
+	// driver re-affirming here would trim it to the TickLimit window.
+	if (F::AutoTrickstab.IsCommitting())
 		return;
 
 	int iTicks = std::min(m_iShiftedTicks + 1, 22);

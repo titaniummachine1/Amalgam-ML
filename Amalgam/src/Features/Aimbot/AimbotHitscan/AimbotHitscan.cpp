@@ -695,6 +695,95 @@ static inline void DrawVisuals(CTFPlayer* pLocal, Target_t& tTarget, int nWeapon
 	}
 }
 
+// There's probably a better way of doing this
+CAimbotHitscan::CrosshairRecordInfo_t CAimbotHitscan::GetCrosshairRecord(const Vec3 vAngles, const Vec3 vPos, std::vector<TickRecord*> vRecords, const std::vector<const mstudiobbox_t*> vHitboxes)
+{
+	float flMinFov = 45.f;
+	float flMinDist = 50.f;
+	float flSimTime = -1.f;
+	bool bInsideRecord = false;
+	for (auto pRecord : vRecords)
+	{
+		for (auto pBox : vHitboxes)
+		{
+			Vec3 vPoint = (pBox->bbmin + pBox->bbmax) / 2;
+			Vec3 vCenter; Math::VectorTransform(vPoint, pRecord->m_aBones[pBox->bone], vCenter);
+			const auto vAngleTo = Math::CalcAngle(vPos, vCenter);
+			const float flFOVTo = Math::CalcFov(vAngles, vAngleTo);
+			const float flDistTo = vPos.DistTo(vCenter);
+
+			// We are inside this record (probably)
+			if (flDistTo < flMinDist)
+			{
+				flSimTime = pRecord->m_flSimTime;
+				flMinDist = flDistTo;
+				bInsideRecord = true;
+			}
+			else if (!bInsideRecord && flFOVTo < flMinFov)
+			{
+				flSimTime = pRecord->m_flSimTime;
+				flMinFov = flFOVTo;
+			}
+		}
+	}
+
+	return CrosshairRecordInfo_t{ flMinDist, flMinFov, flSimTime, bInsideRecord };
+}
+
+void CAimbotHitscan::BacktrackToCrosshair(CUserCmd* pCmd)
+{
+	const Vec3 vShootPos = F::Ticks.GetShootPos();
+	const Vec3 vAngles = pCmd->viewangles;
+
+	std::vector<CrosshairRecordInfo_t> vValidRecords;
+	for (auto pEntity : H::Entities.GetGroup(EntityEnum::PlayerEnemy))
+	{
+		if (!pEntity->As<CTFPlayer>()->IsAlive()
+			|| pEntity->As<CTFPlayer>()->IsAGhost()
+			|| pEntity->As<CTFPlayer>()->IsInvulnerable())
+			continue;
+
+		const mstudiohitboxset_t* pSet = pEntity->As<CBaseAnimating>()->GetHitboxSet();
+		if (!pSet) continue;
+
+		std::vector<TickRecord*> vRecords;
+		if (!F::Backtrack.GetRecords(pEntity, vRecords))
+			continue;
+
+		std::vector<const mstudiobbox_t*> vHitboxes;
+		for (int i = 0; i < pSet->numhitboxes; i++)
+			if (auto pBox = pSet->pHitbox(i)) vHitboxes.emplace_back(pBox);
+
+		if (vHitboxes.empty())
+			continue;
+
+		vRecords = F::Backtrack.GetValidRecords(vRecords);
+		CrosshairRecordInfo_t tRecordInfo = GetCrosshairRecord(vAngles, vShootPos, vRecords, vHitboxes);
+		if (tRecordInfo.m_flSimTime == -1.f)
+			continue;
+
+		vValidRecords.push_back(tRecordInfo);
+	}
+
+	if (vValidRecords.empty())
+		return;
+
+	auto pFinalTick = std::ranges::min_element(vValidRecords, [&](const CrosshairRecordInfo_t& a, const CrosshairRecordInfo_t& b)
+		{
+			const bool bInsideBoth = a.m_bInsideThisRecord && b.m_bInsideThisRecord;
+			const bool bNotInsideRecords = !a.m_bInsideThisRecord && !b.m_bInsideThisRecord;
+
+			const bool bResult =
+			{
+					bInsideBoth ? a.m_flMinDist < b.m_flMinDist :
+					bNotInsideRecords ? a.m_flFov < b.m_flFov :
+					a.m_bInsideThisRecord
+			};
+			return bResult;
+		});
+	pCmd->tick_count = TIME_TO_TICKS(pFinalTick->m_flSimTime + F::Backtrack.GetFakeInterp());
+}
+
 void CAimbotHitscan::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
 	const int nWeaponID = pWeapon->GetWeaponID();
@@ -809,7 +898,7 @@ void CAimbotHitscan::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 				F::Resolver.HitscanRan(pLocal, tTarget.m_pEntity->As<CTFPlayer>(), pWeapon, tTarget.m_nAimedHitbox);
 
 			if (tTarget.m_bBacktrack)
-				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp());
+				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime + F::Backtrack.GetFakeInterp());
 		}
 		DrawVisuals(pLocal, tTarget, nWeaponID);
 

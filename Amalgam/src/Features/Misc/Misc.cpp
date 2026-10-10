@@ -434,6 +434,8 @@ void CMisc::AutoPeek(CTFPlayer* pLocal, CUserCmd* pCmd, bool bPost)
 			{
 				m_vPeekReturnPos = vLocalPos;
 				m_bPeekPlaced = true;
+				// Pivot look: aborts rewrite withheld history to these angles.
+				F::PacketBuffer.m_vPeekPivotAng = pCmd->viewangles;
 			}
 			else
 			{

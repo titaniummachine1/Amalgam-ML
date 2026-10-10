@@ -2,11 +2,19 @@
 
 #include "../../Ticks/Ticks.h"
 #include "../../Aimbot/AutoRocketJump/AutoRocketJump.h"
+#include "../PacketBuffer/PacketBuffer.h"
 
 bool CFakeLag::IsAllowed(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
 	if (!pLocal->IsAlive() || pLocal->IsAGhost())
 		return false;
+
+	// Fake peek withhold rides fakelag (single choke owner): out peeking
+	// with no shot yet chokes here regardless of the fakelag mode. Window
+	// caps + abort/commit stay in RunPeek; the 21-tick overchoke ceiling in
+	// ManagePacket still bounds the run.
+	if (F::PacketBuffer.PeekWantsChoke(pLocal))
+		return true;
 
 	if (m_bPreservingBlast)
 	{

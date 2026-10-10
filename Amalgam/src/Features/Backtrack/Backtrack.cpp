@@ -7,8 +7,20 @@
 void CBacktrack::Reset()
 {
 	m_mRecords.clear();
+	m_mDidShoot.clear();
 	m_dSequences.clear();
 	m_iLastInSequence = 0;
+	m_nOldInSequenceNr = 0;
+	m_nOldInReliableState = 0;
+	m_nLastInSequenceNr = 0;
+	m_nOldTickBase = 0;
+	m_flMaxUnlag = 1.f;
+	m_flFakeLatency = 0.f;
+	m_flFakeInterp = 0.015f;
+	m_bSettingUpBones = false;
+	m_iTickCount = 0;
+	m_flSentInterp = -1.f;
+	m_tRecord = {};
 }
 
 
@@ -302,7 +314,7 @@ void CBacktrack::CleanRecords()
 
 		//const int iOldSize = pRecords.size();
 
-		const int flDeadtime = I::GlobalVars->curtime + GetReal() - m_flMaxUnlag; // int ???
+		const float flDeadtime = I::GlobalVars->curtime + GetReal() - m_flMaxUnlag;
 		if (vRecords.size() > 1 && vRecords.back().m_flSimTime == std::numeric_limits<float>::max())
 			vRecords.pop_back();
 		while (!vRecords.empty())
@@ -350,7 +362,13 @@ void CBacktrack::ReportShot(int iIndex)
 		return;
 
 	auto pEntity = I::ClientEntityList->GetClientEntity(iIndex);
-	if (!pEntity || SDK::GetWeaponType(pEntity->As<CTFPlayer>()->m_hActiveWeapon()->As<CTFWeaponBase>()) != EWeaponType::HITSCAN)
+	auto pPlayer = pEntity ? pEntity->As<CTFPlayer>() : nullptr;
+	if (!pPlayer)
+		return;
+
+	auto pActiveWeapon = pPlayer->m_hActiveWeapon().Get();
+	auto pWeapon = pActiveWeapon ? pActiveWeapon->As<CTFWeaponBase>() : nullptr;
+	if (SDK::GetWeaponType(pWeapon) != EWeaponType::HITSCAN)
 		return;
 
 	m_mDidShoot[pEntity->entindex()] = true;

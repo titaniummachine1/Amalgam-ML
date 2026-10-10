@@ -26,15 +26,25 @@ private:
 	int m_iChokedRun = 0;
 	int m_iRunStart = 0;
 
+	// Neutralize a withheld run in the engine queue (pivot rewrite).
+	// Slot-guarded: never touches reused slots.
+	void DropChokedRun(int iRunStart, int iCommandNumber);
+
 public:
 	// Fake-peek state (published by CMisc::AutoPeek pre-phase each tick;
 	// rest driven here at CreateMove end).
 	bool m_bPeekPlaced = false;
 	Vec3 m_vPeekPivot = {};
+	Vec3 m_vPeekPivotAng = {}; // viewangles at placement: abort rewrites history to these
 	bool m_bPeekCommitted = false;
 	bool m_bPeekReturning = false;
 	bool m_bPeekRun = false;
 	int m_iPeekTicks = 0;
+
+	// Withhold predicate for FakeLag: out peeking, no shot yet, no abort.
+	// Lets fakelag own the choke (single choke owner); RunPeek keeps
+	// commit/abort/warp-back and never forces choke itself.
+	bool PeekWantsChoke(CTFPlayer* pLocal) const;
 
 	void Snapshot(CUserCmd* pCmd, bool bSendPacket);
 	// Fake peek driver (System A): withhold/abort/commit/warp-back. Runs at

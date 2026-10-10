@@ -38,7 +38,7 @@ void CAutoHeal::AutoHeal(CUserCmd* pCmd)
 		Vec3 vCenter = pRecord->m_vOrigin + (pRecord->m_vMins + pRecord->m_vMaxs) / 2;
 		if (SDK::VisPosWorld(m_pLocal, pTarget, vEyePos, vCenter))
 		{
-			pCmd->tick_count = TIME_TO_TICKS(pRecord->m_flSimTime) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp());
+			pCmd->tick_count = TIME_TO_TICKS(pRecord->m_flSimTime + F::Backtrack.GetFakeInterp());
 			break;
 		}
 	}
