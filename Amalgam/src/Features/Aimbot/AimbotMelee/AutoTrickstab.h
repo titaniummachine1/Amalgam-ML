@@ -72,6 +72,7 @@ public:
 	bool WarpPressDue();
 	int WarpEnt() const { return m_iWarpEnt; }
 	Vec3 WarpDest() const { return m_vWarpDest; }
+	Vec3 WarpAim() const { return m_vWarpAim; } // frozen solved direction (verified FROM dest)
 	bool WarpWantsCharge() const { return m_bWarpCharge; }
 
 	// Best direction this tick (assist steering + warp commit).
@@ -86,6 +87,7 @@ private:
 	bool m_bWarpDirect = false; // direct warp-to-hit commit (no orbit/behind)
 	int m_iWarpEnt = -1;        // warp target (commit lock + press stamping)
 	Vec3 m_vWarpDest = {};      // warp arrival feet (travel goal)
+	Vec3 m_vWarpAim = {};       // frozen firing solution (verified FROM dest)
 	bool m_bWarpCharge = false; // sim assumed charge speeds: live arm follows
 	int m_iWarpPressAt = 0;   // stopped-time ticks to hold the swing (Full; Normal 0)
 	void WarpDirect(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd,

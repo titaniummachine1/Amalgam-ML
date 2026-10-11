@@ -2,6 +2,7 @@
 
 #include "../Ticks/Ticks.h"
 #include "../AntiCheatCompatibility/AntiCheatCompatibility.h"
+#include "../../Utils/DtTrace/DtTrace.h"
 
 #define WEAPON_RANDOM_RANGE				10000
 #define TF_DAMAGE_CRIT_MULTIPLIER		3.0f
@@ -360,6 +361,7 @@ void CCritHack::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 		return;
 
 	int iRequest = GetCritRequest(pCmd, pLocal, pWeapon);
+	DtTrace("T%d CRIT req=%d aimTgt=%d", I::GlobalVars->tickcount, iRequest, G::AimTarget.m_iEntIndex);
 	if (iRequest == CritRequestEnum::Any)
 		return;
 

@@ -32,6 +32,8 @@ namespace Aimbot {
 			CVarEnum(ChargeTiming, "Charge timing", 1, NONE, nullptr,
 				VA_LIST("Early", "Late"),
 				Early, Late);
+			CVar(ChargeBot, "Charge bot", false);
+			CVar(ChargeBotFOV, "Charge bot FOV", 30.f, SLIDER_CLAMP | SLIDER_PRECISION, 5.f, 90.f);
 			CVar(CritRefill, "Auto crit refill", false);
 			CVar(CritRefillAmount, "Crit refill amount", 5, SLIDER_CLAMP, 1, 25);
 

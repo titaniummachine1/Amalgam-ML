@@ -10,10 +10,19 @@
 #include "../../Visuals/Visuals.h"
 #include "../../AntiCheatCompatibility/AntiCheatCompatibility.h"
 #include "../../CritHack/CritHack.h"
+#include "../../../Utils/DtTrace/DtTrace.h"
 
 static constexpr float kChargeReachDistance = 128.f;
 static constexpr float kCritRefillCombatDistance = 500.f;
 static constexpr float kCritRefillSafeDistance = 700.f;
+// Frozen-world ghost rejection: a record whose origin disagrees with the
+// live origin by more than this never resolves (the server has no such
+// position to rewind to usefully). 24u ~= several frames of fast movement;
+// a truly frozen foe coincides exactly, any age.
+static constexpr float kFrozenRecordEpsilon = 24.f;
+// Frozen-world angle veto: a history-only winner diverging this far (deg,
+// 2D) from the live-foe direction is a ghost, never a solution.
+static constexpr float kFrozenAngleVetoDeg = 10.f;
 
 static inline bool AimFriendlyBuilding(CBaseObject* pBuilding)
 {
@@ -162,6 +171,29 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 	m_mRecordMap.clear(); m_mPaths.clear();
 	m_vEyePos = pLocal->GetShootPos();
 	m_flRange = pWeapon->GetSwingRange();
+
+	// Literal engine range, evaluated HERE (not after the early return):
+	// drain ticks early-return on cooldown, and a post-return extension
+	// would collapse 128→48 mid-flight — press validates long, drain
+	// validates short, miss. 128 iff the swing genuinely resolves
+	// charged: condition set, M2 already fired for this swing (condition
+	// lands 1-2 ticks later), or the machine is sequencing one (fires 2
+	// ticks after swing start). Idle + uncharged = base, always.
+	if (Vars::Aimbot::Melee::ChargeReach.Value &&
+		pLocal->m_iClass() == TF_CLASS_DEMOMAN &&
+		(pLocal->InCond(TF_COND_SHIELD_CHARGE)
+		|| (m_bChargeFired && pLocal->m_flChargeMeter() > 0.f)
+		|| (m_eChargeState != ChargeState::Idle && pLocal->m_flChargeMeter() > 0.f)))
+	{
+		m_flRange = kChargeReachDistance;
+	}
+	// Press-hold: while a validated swing flies inside its dump, never
+	// shrink the range below what the press validated (machine idles,
+	// manual charge released, meter drained — the swing still flies and
+	// its aim must keep tracking, not freeze). Undumped tails keep the
+	// honest recomputed range instead.
+	if (pWeapon->m_flSmackTime() > 0.f && F::Ticks.m_bDoubletap)
+		m_flRange = std::max(m_flRange, m_flPressRange);
 	m_iSimulatedTicks = GetSwingTime(pWeapon), m_iSwingTicks = GetSwingTime(pWeapon, false);
 	m_iDoubletapTicks = F::Ticks.GetTicks(pWeapon);
 
@@ -191,10 +223,30 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 		: m_iSwingTicks;
 	m_iSimulatedTicks = std::min(m_iSimulatedTicks, iSmackLeft);
 
+	// Coverage-gated frozen world: validation runs frozen ONLY when the
+	// dump truly covers the full smack window. Pre-press: bank spans it
+	// and the dump will fire (mirrors the arming gates below, so a swing
+	// the dump can't take never validates frozen). Mid-swing: a dump is
+	// executing for this swing, so the batch is atomic and no fresh
+	// updates arrive inside it. Short bank = honest live prediction
+	// instead: the swing fires NOW with a partial instant head and a live
+	// tail, validated for the world it resolves in — never frozen-now and
+	// live-later. (m_bDoubletap clears post-drain, so a partial dump's
+	// live tail automatically re-validates live on following frames.)
+	const bool bPreSwing = pWeapon->m_flSmackTime() < 0.f;
+	const bool bDumpWillFire = Vars::Doubletap::Doubletap.Value && !F::Ticks.m_bSpeedhack
+		&& !F::Ticks.m_bWarp && !F::AutoRocketJump.IsRunning()
+		&& !(IsChargeBusy() && m_eChargeState != ChargeState::Charge);
+	m_bDtValidated = bPreSwing
+		? (bDumpWillFire && F::Ticks.m_iShiftedTicks >= m_iSwingTicks)
+		: (Vars::Doubletap::Doubletap.Value && !F::Ticks.m_bSpeedhack && F::Ticks.m_bDoubletap);
+	if (m_bDtValidated && bPreSwing)
+		m_iSimulatedTicks = m_iSwingTicks = std::max(GetSwingTime(pWeapon, false), 1);
+
 	m_bShouldSwing = m_iDoubletapTicks <= m_iSwingTicks || Vars::Doubletap::AntiWarp.Value && pLocal->m_hGroundEntity();
 	m_bSimulatedLocal = false;
 
-	if ((!Vars::Aimbot::Melee::SwingPrediction.Value || !m_iSimulatedTicks) && !m_iDoubletapTicks || !G::CanPrimaryAttack || (pWeapon->m_flSmackTime() > 0.f && !bChargeTrackingSwing))
+	if ((!Vars::Aimbot::Melee::SwingPrediction.Value || !m_iSimulatedTicks) && !m_iDoubletapTicks && !m_bDtValidated || !G::CanPrimaryAttack || (pWeapon->m_flSmackTime() > 0.f && !bChargeTrackingSwing))
 	{
 		m_iSimulatedTicks = m_iSwingTicks = 0;
 		return;
@@ -206,7 +258,8 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 	// yaw, full forward, charge speed cap) so predictions match the locked
 	// ~750 straight instead of strafing fiction.
 	const bool bCharging = pLocal->m_iClass() == TF_CLASS_DEMOMAN
-		&& pLocal->InCond(TF_COND_SHIELD_CHARGE);
+		&& (pLocal->InCond(TF_COND_SHIELD_CHARGE)
+		|| (m_bChargeFired && pLocal->m_flChargeMeter() > 0.f));
 	F::MoveSim.Initialize(pLocal, mMoveStorage[pLocal->entindex()], false, !m_iDoubletapTicks && !bCharging, false);
 	if (bCharging)
 	{
@@ -219,13 +272,22 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 		tLocalStorage.m_MoveData.m_flUpMove = 0.f;
 		tLocalStorage.m_MoveData.m_vecViewAngles = { 0.f, pCmd->viewangles.y, 0.f };
 	}
-	for (auto& tTarget : vTargets)
-		F::MoveSim.Initialize(tTarget.m_pEntity, mMoveStorage[tTarget.m_pEntity->entindex()], false, true, false);
+	// Frozen world (DT on): the foe is never simulated. Only we are.
+	if (!m_bDtValidated)
+		for (auto& tTarget : vTargets)
+			F::MoveSim.Initialize(tTarget.m_pEntity, mMoveStorage[tTarget.m_pEntity->entindex()], false, true, false);
 
 	int iMax = std::max(m_iSimulatedTicks, m_iDoubletapTicks), iTicks = iMax; bool bSwung = false;
 	Vec3 vLocalOrigin = mMoveStorage[pLocal->entindex()].m_MoveData.m_vecAbsOrigin;
+	// Resolve eye, not drain-end eye: the smack lands iSmackLeft ticks
+	// from now, but the walk above runs the whole bank window. Aiming
+	// from the overshoot aims past the foe whenever bank > delay.
+	const int iResolveAt = std::clamp(iSmackLeft, 0, iMax);
+	Vec3 vResolveOrigin = vLocalOrigin;
 	for (int i = 0; i < iTicks; i++) // intended for plocal to collide with targets
 	{
+		// Local always simulates: we walk during the drain, so the resolve
+		// eye is where we end up, not where we stand now.
 		{
 			auto& tMoveStorage = mMoveStorage[pLocal->entindex()];
 			if (!bSwung && (!m_iDoubletapTicks || Vars::Doubletap::AntiWarp.Value && pLocal->m_hGroundEntity() || iMax - i <= m_iSwingTicks))
@@ -237,16 +299,31 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 				// above with zero live writes; stripping lied to both sim
 				// and live state)
 			}
-			if (m_iDoubletapTicks && Vars::Doubletap::AntiWarp.Value && pLocal->m_hGroundEntity())
+			// AntiWarp mirrors the dump: dumped ticks execute with
+			// AntiWarp-rewritten moves (reverse/zero/restore ≈ stopped
+			// time), so the sim must walk the same pattern. Gate is
+			// dump-POSSIBLE (validated), not dump-armed (doubletapTicks
+			// is 0 pre-press, exactly when validation needs it) — else
+			// validation aims from 60u of fictional walking. Exclusions
+			// mirror live arming exactly: never under warp (teleport
+			// owns position), trickstab commits (live doesn't arm
+			// there), or speedhack (DT disarmed, live never applies it).
+			const bool bSimAntiWarp = Vars::Doubletap::AntiWarp.Value && pLocal->m_hGroundEntity()
+				&& !F::Ticks.m_bWarp && !F::Ticks.m_bSpeedhack && !F::AutoTrickstab.IsCommitting()
+				&& !(IsChargeBusy() && m_eChargeState != ChargeState::Charge)
+				&& !pLocal->InCond(TF_COND_SHIELD_CHARGE);
+			if ((m_iDoubletapTicks || m_bDtValidated) && bSimAntiWarp)
 				F::Ticks.AntiWarp(pLocal, pCmd->viewangles.y, tMoveStorage.m_MoveData.m_flForwardMove, tMoveStorage.m_MoveData.m_flSideMove, iMax - i - 1);
 
 			F::MoveSim.RunTick(tMoveStorage);
 
 			vLocalOrigin = tMoveStorage.m_MoveData.m_vecAbsOrigin;
+			if (i + 1 == iResolveAt)
+				vResolveOrigin = vLocalOrigin;
 			m_bSimulatedLocal = true;
 		}
 
-		if (i < m_iSimulatedTicks - m_iDoubletapTicks)
+		if (i < m_iSimulatedTicks - m_iDoubletapTicks && !m_bDtValidated)
 		{
 			for (auto& tTarget : vTargets)
 			{
@@ -265,17 +342,10 @@ void CAimbotMelee::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCm
 			}
 		}
 	}
-	m_vEyePos = vLocalOrigin + pLocal->m_vecViewOffset();
+	m_vEyePos = vResolveOrigin + pLocal->m_vecViewOffset();
+	// Base range only here; the charge extension lives at UpdateInfo top
+	// so it also holds on early-return drain ticks.
 	m_flRange = pWeapon->GetSwingRange();
-
-	// Extend melee range to charge-reach distance when Demoman has full charge and exploit is ready
-	if (Vars::Aimbot::Melee::ChargeReach.Value &&
-		pLocal->m_iClass() == TF_CLASS_DEMOMAN &&
-		pLocal->m_flChargeMeter() >= 100.f &&
-		!pLocal->InCond(TF_COND_SHIELD_CHARGE))
-	{
-		m_flRange = kChargeReachDistance;
-	}
 
 	if (Vars::Visuals::Prediction::SwingLines.Value && Vars::Visuals::Prediction::PlayerPath.Value)
 	{
@@ -409,11 +479,12 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 	if (Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Unsimulated && H::Entities.GetChoke(tTarget.m_pEntity->entindex()) > Vars::Aimbot::General::TickTolerance.Value)
 		return false;
 
-	// No-FOV aim: rage killaura or a latched trickstab commit. Same
-	// condition as target selection so the exec target always flows
-	// through and the stab can't be starved by a small AimFOV.
+	// No-FOV aim: rage killaura, a latched trickstab commit, or a warp
+	// solution being verified. Same condition as target selection so the
+	// exec target always flows through and the stab can't be starved by
+	// a small AimFOV.
 	const bool bNoFov = Vars::Aimbot::Melee::Rage.Value
-		|| F::AutoTrickstab.IsCommitting();
+		|| F::AutoTrickstab.IsCommitting() || m_bWarpSolving;
 
 	float flRange = SDK::AttribHookValue(m_flRange, "melee_range_multiplier", pWeapon);
 	float flHull = SDK::AttribHookValue(18, "melee_bounds_multiplier", pWeapon);
@@ -451,23 +522,43 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 
 		for (auto& tRecord : vSimRecords)
 			vRecords.push_back(&tRecord);
-		for (auto iTimeMod : vTimeMods)
-			vRecords = F::Backtrack.GetValidRecords(vRecords, pLocal, true, -TICKS_TO_TIME(iTimeMod));
-		if (vRecords.empty())
-			return false;
+		// Frozen world (DT drain): the foe has not moved. Time-filtering
+		// records out mid-drain makes CanHit fail, aim stops updating,
+		// player drifts, smack resolves at the wrong angle. So the age
+		// filter is skipped — but age is replaced by a POSITION check: a
+		// record whose origin disagrees with the live origin is a ghost
+		// (history the server cannot rewind to usefully), never a solution.
+		// A truly frozen foe coincides exactly, at any age.
+		if (!m_bDtValidated)
+			for (auto iTimeMod : vTimeMods)
+				vRecords = F::Backtrack.GetValidRecords(vRecords, pLocal, true, -TICKS_TO_TIME(iTimeMod));
+		else
+		{
+			const Vec3 vLiveOrigin = tTarget.m_pEntity->GetAbsOrigin();
+			for (auto it = vRecords.begin(); it != vRecords.end();)
+				if (!*it || (*it)->m_bInvalid || ((*it)->m_vOrigin - vLiveOrigin).Length() > kFrozenRecordEpsilon)
+					it = vRecords.erase(it);
+				else
+					++it;
+		}
 	}
-	else
-	{
-		F::Backtrack.m_tRecord = { tTarget.m_pEntity->m_flSimulationTime(), tTarget.m_pEntity->m_vecOrigin(), tTarget.m_pEntity->m_vecMins(), tTarget.m_pEntity->m_vecMaxs() };
-		if (!tTarget.m_pEntity->SetupBones(F::Backtrack.m_tRecord.m_aBones, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, tTarget.m_pEntity->m_flSimulationTime()))
-			return false;
+	// The live position always contests: it is the server truth, needs no
+	// rewind, and a hittable live foe is never passed over for history.
+	// Bones are borrowed from the newest record (melee traces hulls, not
+	// bones); a full setup runs only when no record exists at all.
+	m_tLiveRecord = { tTarget.m_pEntity->m_flSimulationTime(), tTarget.m_pEntity->m_vecOrigin(), tTarget.m_pEntity->m_vecMins(), tTarget.m_pEntity->m_vecMaxs() };
+	if (!vRecords.empty())
+		memcpy(m_tLiveRecord.m_aBones, vRecords.front()->m_aBones, sizeof(m_tLiveRecord.m_aBones));
+	else if (!tTarget.m_pEntity->SetupBones(m_tLiveRecord.m_aBones, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, tTarget.m_pEntity->m_flSimulationTime()))
+		return false;
+	vRecords.insert(vRecords.begin(), &m_tLiveRecord);
 
-		vRecords = { &F::Backtrack.m_tRecord };
-	}
-
-	// Execution eye: swings execute now, so firing solutions originate live.
-	// The sim still predicts TARGETS to smack time (records below).
-	const Vec3 vExecEye = pLocal->GetShootPos();
+	// Resolve eye: the smack lands after the swing delay (and inside a DT
+	// dump, after the drain walk), so the firing solution must originate
+	// at the simulated resolve eye. Validating from the live eye while
+	// tracing from the sim eye tests a line the swing never takes — a
+	// systematic miss whenever we move during the delay.
+	const Vec3& vEye = m_vEyePos;
 	CGameTrace trace = {};
 	CTraceFilterHitscan filter = {};
 	filter.pSkip = pLocal;
@@ -489,18 +580,25 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 	float flBestFov = FLT_MAX;
 	TickRecord* pFall = nullptr;
 	Vec3 vFallPos = {}, vFallAngle = {};
+	// Live candidacy: the live record always contests, and when hittable
+	// it wins outright (below) — a hittable live foe is never passed over
+	// for history. Tracked at pass time (knife re-verified at override).
+	bool bLiveHit = false;
+	Vec3 vLivePos = {}, vLiveAngle = {};
 	for (auto pRecord : vRecords)
 	{
-		// Closest point on the target AABB to our eye. Point-blank (eye
-		// inside the box) degenerates to a zero-vector angle: keep the
-		// selection bone pos instead. Knife keeps center x/y: backstab
-		// detection needs center-based angles, that path is untouched.
-		const Vec3 vClamp = vExecEye.Clamp(pRecord->m_vOrigin + pRecord->m_vMins, pRecord->m_vOrigin + pRecord->m_vMaxs);
-		if (vClamp.DistToSqr(vExecEye) >= 1.f)
-			tTarget.m_vPos = vClamp;
-			if (bKnifeStab)
-				tTarget.m_vPos.x = pRecord->m_vOrigin.x, tTarget.m_vPos.y = pRecord->m_vOrigin.y;
-			Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(vExecEye, tTarget.m_vPos), tTarget.m_vAngleTo);
+		// Box CENTER, not the closest corner: corner-grazing rays carry no
+		// perturbation margin — client prediction clangs on the graze
+		// while the server misses it by 5u (clang with no damage). Center
+		// rays keep the full hull margin on every side, so eye/record
+		// staleness is absorbed, not fatal. Point-blank (eye inside the
+		// box) degenerates to a zero-vector angle: keep the selection
+		// bone pos instead. Center-based angles also satisfy the knife
+		// backstab path (2D dots), so no special case is needed.
+		const Vec3 vCenter = pRecord->m_vOrigin + (pRecord->m_vMins + pRecord->m_vMaxs) * 0.5f;
+		if (vCenter.DistToSqr(vEye) >= 1.f)
+			tTarget.m_vPos = vCenter;
+		Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(vEye, tTarget.m_vPos), tTarget.m_vAngleTo);
 
 		Vec3 vRestoreOrigin = tTarget.m_pEntity->GetAbsOrigin();
 		Vec3 vRestoreMins = tTarget.m_pEntity->m_vecMins();
@@ -511,7 +609,7 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		tTarget.m_pEntity->m_vecMaxs() = pRecord->m_vMaxs - PLAYER_ORIGIN_COMPRESSION;
 
 		Vec3 vForward; Math::AngleVectors(tTarget.m_vAngleTo, &vForward);
-		Vec3 vTraceEnd = vExecEye + vForward * flRange;
+		Vec3 vTraceEnd = vEye + vForward * flRange;
 
 		SDK::TraceHull(m_vEyePos, vTraceEnd, {}, {}, MASK_SOLID, &filter, &trace);
 		bool bReturn = trace.m_pEnt == tTarget.m_pEntity;
@@ -527,7 +625,9 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 
 		if (bReturn)
 		{
-			const float flFov = Math::CalcAngle(vExecEye, tTarget.m_vPos).DeltaAngle(vViewAngles).Length2DSqr();
+			if (pRecord == &m_tLiveRecord)
+				bLiveHit = true, vLivePos = tTarget.m_vPos, vLiveAngle = tTarget.m_vAngleTo;
+			const float flFov = Math::CalcAngle(vEye, tTarget.m_vPos).DeltaAngle(vViewAngles).Length2DSqr();
 			if (flFov < flBestFov)
 			{
 				// Knife verified only on improvement (cheaper than before:
@@ -549,10 +649,10 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 			if (pFall)
 				break;
 
-			auto vAngle = Math::CalcAngle(vExecEye, tTarget.m_vPos);
+			auto vAngle = Math::CalcAngle(vEye, tTarget.m_vPos);
 
 			Math::AngleVectors(vAngle, &vForward);
-			vTraceEnd = vExecEye + vForward * flRange;
+			vTraceEnd = vEye + vForward * flRange;
 
 			SDK::TraceHull(m_vEyePos, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
 			if (trace.m_pEnt == tTarget.m_pEntity)
@@ -584,12 +684,12 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 			for (float flMod = 0.f; flMod <= 1.f; flMod += 0.05f)
 			{
 				const Vec3 vPoint = pRecord->m_vOrigin + (pRecord->m_vMins + pRecord->m_vMaxs) * flMod;
-				const Vec3 vAngle = Math::CalcAngle(vExecEye, vPoint);
+				const Vec3 vAngle = Math::CalcAngle(vEye, vPoint);
 				if (!bNoFov && !F::AimbotGlobal.ShouldAimAtAngle(vAngle))
 					continue;
 
 				Vec3 vForward; Math::AngleVectors(vAngle, &vForward);
-				Vec3 vTraceEnd = vExecEye + vForward * flRange;
+				Vec3 vTraceEnd = vEye + vForward * flRange;
 
 				SDK::TraceHull(m_vEyePos, vTraceEnd, {}, {}, MASK_SOLID, &filter, &trace);
 				bool bHit = trace.m_pEnt == tTarget.m_pEntity;
@@ -601,6 +701,8 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 				if (!bHit)
 					continue;
 
+				if (pRecord == &m_tLiveRecord)
+					bLiveHit = true, vLivePos = vPoint, vLiveAngle = vAngle;
 				const float flFov = vAngle.DeltaAngle(vViewAngles).Length2DSqr();
 				if (flFov < flBestFov)
 				{
@@ -620,12 +722,38 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		}
 	}
 
+	// Live priority: a hittable live foe wins outright (knife re-verified;
+	// the loop already verified any bid it tracks, this is the same check
+	// for the override path). History only decides when live can't hit.
+	if (bLiveHit && (!bKnifeStab || CanBackstab(tTarget.m_pEntity, pLocal, vLiveAngle)))
+	{
+		pBest = &m_tLiveRecord;
+		vBestPos = vLivePos;
+		vBestAngle = vLiveAngle;
+	}
+	// Frozen-world sanity: a history-only solution must agree with the
+	// live foe. Divergent angles mean a ghost (stale position the server
+	// will not reproduce); holding beats wasting the swing. Exempt live
+	// winners (they ARE the agreement) and live play (rewind is the point
+	// of backtrack there). Point-blank degenerates the angle: pass it.
+	if (pBest && pBest != &m_tLiveRecord && m_bDtValidated)
+	{
+		const Vec3 vLiveCenter = tTarget.m_pEntity->GetAbsOrigin()
+			+ (tTarget.m_pEntity->m_vecMins() + tTarget.m_pEntity->m_vecMaxs()) * 0.5f;
+		if (vLiveCenter.DistToSqr(vEye) >= 1.f
+			&& Math::CalcAngle(vEye, vLiveCenter).DeltaAngle(vBestAngle).Length2D() > kFrozenAngleVetoDeg)
+			pBest = nullptr;
+	}
+
 	if (pBest)
 	{
 		tTarget.m_vPos = vBestPos;
 		tTarget.m_vAngleTo = vBestAngle;
 		tTarget.m_pRecord = pBest;
-		tTarget.m_bBacktrack = tTarget.m_iTargetType == TargetEnum::Player;
+		// Live win = no rewind: the position IS the server truth, so no
+		// tick_count stamp (stamping a backtrack tick for a live aim would
+		// rewind the foe away from the aimed point).
+		tTarget.m_bBacktrack = pBest != &m_tLiveRecord && tTarget.m_iTargetType == TargetEnum::Player;
 
 		return true;
 	}
@@ -823,10 +951,128 @@ void CAimbotMelee::BacktrackToCrosshair(CTFPlayer* pLocal, CUserCmd* pCmd)
 	pCmd->tick_count = TIME_TO_TICKS(flBestSimTime + F::Backtrack.GetFakeInterp());
 }
 
+// Firing solution FROM a warp-dest eye: runs the target through CanHit so
+// the warp inherits identical gates, clamp-point angle math and record
+// choice as the swing that will execute (frozen target assumed, same as
+// the walk sim). Stale swing-pred sims would poison it (last tick's
+// positions), so they go first; UpdateInfo rebuilds them later this tick
+// anyway, as do m_vEyePos/m_flRange/horizons (set fresh here).
+bool CAimbotMelee::SolveWarpAim(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, const Vec3& vEye, float flRangeOverride)
+{
+	m_mRecordMap.clear();
+	m_vEyePos = vEye;
+	// Charged swings resolve at charge range: without the override the
+	// 70-128u band verifies in the walk but fails here, silently dropping
+	// claims that would have hit.
+	m_flRange = (flRangeOverride >= 0.f) ? flRangeOverride : pWeapon->GetSwingRange();
+	m_iSimulatedTicks = m_iSwingTicks = GetSwingTime(pWeapon);
+	m_iDoubletapTicks = F::Ticks.GetTicks(pWeapon);
+	m_bWarpSolving = true;
+	const int iResult = CanHit(tTarget, pLocal, pWeapon);
+	m_bWarpSolving = false;
+	return iResult > 0;
+}
+
 void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
+	m_bFiringSolution = false; // reset every tick; set below only by validation
+	// Aimbot-swing latch: no smack in flight = previous swing (if any)
+	// resolved; a press below re-latches. Manual swings never latch.
+	if (!pWeapon || pWeapon->m_flSmackTime() <= 0.f)
+		m_bAimbotSwing = false;
+	static bool s_bSessionLogged = false;
+	if (!s_bSessionLogged)
+	{
+		s_bSessionLogged = true;
+		DtTrace("SESSION build %s %s", __DATE__, __TIME__);
+	}
+	if (Vars::Doubletap::Doubletap.Value && pWeapon)
+	{
+		const float flSmack = pWeapon->m_flSmackTime();
+		const int iSmackLeft = flSmack > 0.f ? TIME_TO_TICKS(std::max(flSmack - I::GlobalVars->curtime, 0.f)) : -1;
+		// Idle-throttle: RUN+HIT flood burns the 60k session cap in minutes
+		// and blinds later forensics. Full rate while a swing lives, armed,
+		// or warping; 1-in-8 otherwise.
+		const bool bBusy = iSmackLeft >= 0 || F::Ticks.m_bDoubletap || F::Ticks.m_bWarp;
+		if (bBusy || (I::GlobalVars->tickcount & 7) == 0)
+		{
+		const Vec3 vOrg = pLocal->m_vecOrigin();
+		DtTrace("T%d RUN bank=%d goal=%d dtArm=%d warp=%d rech=%d smackLeft=%d canAtk=%d cs=%d chg=%d cf=%d rng=%.0f pos=(%.1f,%.1f,%.1f) vel=%.1f",
+			I::GlobalVars->tickcount, F::Ticks.m_iShiftedTicks, F::Ticks.m_iShiftedGoal, F::Ticks.m_bDoubletap,
+			F::Ticks.m_bWarp, F::Ticks.m_bRecharge, iSmackLeft, G::CanPrimaryAttack, (int)m_eChargeState,
+			(int)pLocal->InCond(TF_COND_SHIELD_CHARGE), (int)m_bChargeFired, m_flRange,
+			vOrg.x, vOrg.y, vOrg.z, pLocal->m_vecVelocity().Length2D());
+		}
+		// Swing-start edge: press logged but smack never begins = phantom
+		// press (IN_ATTACK eaten/choked, never executed) vs smack with no
+		// DMG = genuine miss. One line per swing, always on.
+		static float s_flLastSmack = -1.f;
+		if (s_flLastSmack < 0.f && flSmack > 0.f)
+			DtTrace("T%d SWINGSTART", I::GlobalVars->tickcount);
+		s_flLastSmack = flSmack;
+	}
 	// Auto trickstab warp-fan viz (phase 1: simulate + draw only, no writes).
 	F::AutoTrickstab.Run(pLocal, pWeapon, pCmd);
+	// AntiWarp on charge-sequenced DT dumps: the generic DT driver (the
+	// normal m_bAntiWarp writer) yields while charge is busy, so our dumps
+	// ran without it. Same lifecycle as the driver's: set only while a
+	// dump is armed (cleared post-drain, trackers reset on normal ticks),
+	// never while a warp owns movement (travel executes the sim verbatim).
+	// Never while CHARGING: the charge must fly through the dump (750
+	// coast, travel the batch) — freezing it mid-charge stalls the reach
+	// the swing was timed against. Evaluated per tick, so a charge that
+	// starts mid-batch (Early +2) freezes only its pre-charge sub-ticks.
+	if (F::Ticks.m_bDoubletap && !F::AutoTrickstab.IsCommitting())
+		F::Ticks.m_bAntiWarp = Vars::Doubletap::AntiWarp.Value && pLocal->m_hGroundEntity()
+			&& !pLocal->InCond(TF_COND_SHIELD_CHARGE);
+	// Charge bot (toggle): while actively charging, steer yaw toward the
+	// current target's intercept point so the unstoppable charge arrives
+	// instead of flying the stale M2-time heading. FOV-gated (no view
+	// yanks past the limit), yaw-only (swing owns pitch; later lock ticks
+	// overwrite with validated precision when they agree — both aim at
+	// the same foe). Silent-safe: command angles only, camera untouched.
+	// Target = latched charge target, else the aimbot's current target.
+	if (Vars::Aimbot::Melee::ChargeBot.Value
+		&& pLocal->m_iClass() == TF_CLASS_DEMOMAN
+		&& pLocal->InCond(TF_COND_SHIELD_CHARGE))
+	{
+		CBaseEntity* pFoe = nullptr;
+		auto fValidFoe = [&](IClientEntity* pE) -> CBaseEntity*
+		{
+			if (!pE || pE->IsDormant())
+				return nullptr;
+			auto pP = pE->As<CTFPlayer>();
+			if (!pP || !pP->IsAlive() || pP->m_iTeamNum() == pLocal->m_iTeamNum())
+				return nullptr;
+			return pP;
+		};
+		if (m_iChargeTarget > 0)
+		{
+			if (auto pE = I::ClientEntityList->GetClientEntity(m_iChargeTarget))
+				pFoe = fValidFoe(pE);
+		}
+		if (!pFoe && G::AimTarget.m_iEntIndex > 0
+			&& I::GlobalVars->tickcount - G::AimTarget.m_iTickCount <= 66)
+		{
+			if (auto pE = I::ClientEntityList->GetClientEntity(G::AimTarget.m_iEntIndex))
+				pFoe = fValidFoe(pE);
+		}
+		if (pFoe)
+		{
+			const Vec3 vC = pFoe->GetAbsOrigin() + (pFoe->m_vecMins() + pFoe->m_vecMaxs()) * 0.5f;
+			const Vec3 vEyeNow = pLocal->GetShootPos();
+			const float flDist = vEyeNow.DistTo(vC);
+			// Intercept lead: foe velocity over our time-to-arrive at
+			// charge speed, capped (no sight-unseen heroics).
+			const float flLeadT = std::clamp(flDist / 750.f, 0.f, 0.5f);
+			Vec3 vAimAt = vC;
+			if (auto pPF = pFoe->As<CTFPlayer>())
+				vAimAt = vAimAt + pPF->m_vecVelocity() * flLeadT;
+			const Vec3 vWant = Math::CalcAngle(vEyeNow, vAimAt);
+			if (vWant.DeltaAngle(pCmd->viewangles).Length2D() <= Vars::Aimbot::Melee::ChargeBotFOV.Value)
+				pCmd->viewangles.y = vWant.y;
+		}
+	}
 	// Charge reach follow-up: fires IN_ATTACK2 in the latency-aware window
 	// before smack. Runs before all early returns so the charge still
 	// executes if the target leaves normal melee range mid-swing.
@@ -844,23 +1090,35 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 			}
 			else
 			{
-				m_iChargeTicks++;
+				// New swing while armed (stale approach-arm): recount from
+				// THIS smack so Early/Late land on it, not the old count
+				// (which would insta-fire or insta-timeout the sequence).
+				if (m_flLastSmackTime != pWeapon->m_flSmackTime())
+					m_iChargeTicks = 0;
+				m_iChargeTicks++; // counts every execution: live ticks AND dump-batch ticks
 				const int iTicksToSmack = TIME_TO_TICKS(std::max(pWeapon->m_flSmackTime() - I::GlobalVars->curtime, 0.f));
-				// Full smack length for the elapsed-since-swing math below.
 				const int iSmackFull = GetSwingTime(pWeapon, false);
-				// Smack-domain trigger (qawe-faithful): Early = 2 ticks after
-				// swing start; Late = 2 ticks before smack lands. The countdown
-				// advances with EXECUTED game time, so press-tick dumps and
-				// fakelag bursts can't desync it the way hook-run counting
-				// could (a dump collapses the whole window into one observation
-				// and the old counter never reached Early's press tick: the
-				// "Early breaks charges" bug). Smack already landed is handled
-				// by the outer gate (aborts, saves the meter).
+				// Timing law: Early = 2 ticks after swing start; Late = 2
+				// ticks before smack lands. Count-based (not smack-domain):
+				// curtime is frozen inside a dump batch, so the countdown
+				// can't distinguish batch ticks — the execution count can.
+				// Aim+Charge merged to 1 tick (snap + press same tick), so
+				// trigger→press = 1 tick. Press lands at iPressAt+1.
 				const bool bEarly = Vars::Aimbot::Melee::ChargeTiming.Value == Vars::Aimbot::Melee::ChargeTimingEnum::Early;
-				const bool bPressNow = bEarly
-					? (iSmackFull - iTicksToSmack >= 2)
-					: (iTicksToSmack <= 2);
-				if (bPressNow)
+				const int iPressAt = bEarly ? 2 : std::max(iSmackFull - 2, 1);
+				// Compressed time (dump executing): counts run faster than
+				// observations, so fire now. Same swing + countdown jumped
+				// >1 = a dump ran. DT-armed also counts.
+				const bool bSmackJumped = m_flLastSmackTime == pWeapon->m_flSmackTime()
+					&& m_iLastSmackTicks - iTicksToSmack > 1;
+				m_flLastSmackTime = pWeapon->m_flSmackTime();
+				m_iLastSmackTicks = iTicksToSmack;
+				const bool bCompressed = bSmackJumped || F::Ticks.m_bWarp
+					|| (F::Ticks.m_bDoubletap && F::Ticks.GetTicks(pWeapon) > 0);
+				// Minimum tick: Early needs ≥2 ticks after swing start
+				// (swing registered first); Late can fire from tick 1.
+				const int iMinTicks = bEarly ? 2 : 1;
+				if ((m_iChargeTicks >= iPressAt || bCompressed) && m_iChargeTicks >= iMinTicks)
 					m_eChargeState = ChargeState::Aim;
 				else if (m_iChargeTicks > 25)
 				{
@@ -870,9 +1128,11 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 			}
 			break;
 		case ChargeState::Aim:
-			// Snap view to the press-time aim: the smack resolves with the
-			// swing's angles, not drifted camera or stale backlog. Camera
-			// rotates this tick (qawe-faithful); press follows next tick.
+			// Merged Aim+Charge: snap view AND press on the same tick.
+			// Camera locks to the swing's angles (smack resolves with these,
+			// not drifted camera). Press fires immediately — trigger→press
+			// is 1 tick total. Collapse latch: if no dump is armed, start
+			// one now so the smack tail rides the fresh charge instantly.
 			if (pWeapon->m_flSmackTime() <= 0.f)
 			{
 				m_eChargeState = ChargeState::Idle;
@@ -882,32 +1142,39 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 			{
 				pCmd->viewangles.x = m_vChargeAim.x;
 				pCmd->viewangles.y = m_vChargeAim.y;
-				m_eChargeState = ChargeState::Charge;
+				pCmd->buttons |= IN_ATTACK2;
+				// Latch the trigger: the condition lands 1-2 ticks later,
+				// but range + coast-sim must treat the swing as charged
+				// from THIS tick (cleared at swing end below; meter gating
+				// auto-clears it at charge end).
+				m_bChargeFired = true;
+				// Force-send ONLY on live ticks. Inside a dump/warp batch
+				// (drained ticks re-run this hook) a force-send flushes the
+				// packet mid-batch: the remaining ticks spill to the next
+				// server frame, time unfreezes, and the smack resolves
+				// against a moved target with stale angles — the systematic
+				// bash-lands-but-swing-misses. Batch delivery needs no help.
+				if (!F::Ticks.m_bDoubletap && !F::Ticks.m_bWarp)
+					G::SendPacket = true;
+				// Top-up latch only: a dump already running (press/tail set
+				// it on fresh validation) gets its goal fitted to the exact
+				// remaining tail. Never initiates: an unvalidated swing must
+				// not spend bank, and the tail path covers bank-now-covers
+				// with this tick's frozen validation instead.
+				if (F::Ticks.m_bDoubletap && F::Ticks.GetTicks(pWeapon) > 0 && !F::AutoTrickstab.IsCommitting())
+				{
+					const int iTicksToSmack = TIME_TO_TICKS(std::max(pWeapon->m_flSmackTime() - I::GlobalVars->curtime, 0.f));
+					F::Ticks.m_bDoubletap = true;
+					F::Ticks.m_iShiftedGoal = std::min(F::Ticks.m_iShiftedGoal, F::Ticks.ReleaseGoal(std::max(iTicksToSmack, 1)));
+				}
+				m_iChargeTarget = -1;
+				m_eChargeState = ChargeState::Idle;
 			}
 			break;
 		case ChargeState::Charge:
-			// One-shot press: mark consumed but HOLD the state one extra tick
-			// so shift drivers (Doubletap/Warp, gated on busy) can't start a
-			// fresh shift on the press tick and steal the tailored goal below.
-			if (m_iChargeTarget == -1)
-			{
-				m_eChargeState = ChargeState::Idle;
-				break;
-			}
-			pCmd->buttons |= IN_ATTACK2;
-			G::SendPacket = true;
-			// Collapse the remaining smack delay into the fresh charge: the
-			// swing tail rides the shift, impact lands instantly mid-charge,
-			// ranged. The press block can't run now (smack in flight), so
-			// without this explicit latch the ride-along never fires. Never
-			// inside a warp/stab commit: the commit owns the goal.
-			if (!F::Ticks.m_bDoubletap && F::Ticks.GetTicks(pWeapon) > 0 && !F::AutoTrickstab.IsCommitting())
-			{
-				const int iTicksToSmack = TIME_TO_TICKS(std::max(pWeapon->m_flSmackTime() - I::GlobalVars->curtime, 0.f));
-				F::Ticks.m_bDoubletap = true;
-				F::Ticks.m_iShiftedGoal = F::Ticks.ReleaseGoal(std::max(iTicksToSmack, 1));
-			}
-			m_iChargeTarget = -1; // consumed; state stays Charge one extra tick
+			// Dead: Aim merged snap+press into one tick. Fall through to Idle.
+			m_eChargeState = ChargeState::Idle;
+			m_iChargeTarget = -1;
 			break;
 		case ChargeState::Idle:
 		default:
@@ -923,22 +1190,10 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		// busy state that suppresses every future instant swing.
 		m_eChargeState = ChargeState::Idle;
 		m_iChargeTarget = -1;
+		m_bChargeFired = false;
 	}
 
-	// Tail compression: swing already in flight with a long smack delay. The
-	// head played in normal time (or via coverage hold); once the remaining
-	// delay fits the available dump, shift through the tail so the smack
-	// lands instantly. Self-limiting: the dump consumes the bank below the
-	// condition. Skips trivial tails; Doubletap() validates downstream.
-	// Stood down while a charge is sequenced: a fresh dump mid-track
-	// collapses the swing window the sequence was timed against. The
-	// Charge-press tick latches its own window-sized collapse instead.
-	if (pWeapon->m_flSmackTime() > 0.f)
-	{
-		const int iTicksToSmack = TIME_TO_TICKS(std::max(pWeapon->m_flSmackTime() - I::GlobalVars->curtime, 0.f));
-		if (iTicksToSmack >= 2 && iTicksToSmack <= F::Ticks.GetTicks(pWeapon) && !IsChargeBusy())
-			F::Ticks.m_bDoubletap = true;
-	}
+
 
 	static int iStaticAimType = Vars::Aimbot::General::AimType.Value;
 	const int iLastAimType = iStaticAimType;
@@ -987,9 +1242,11 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 	{
 		if (tTarget.m_pEntity->m_iTeamNum() == pLocal->m_iTeamNum())
 			continue;
-		auto it = m_mRecordMap.find(tTarget.m_pEntity->entindex());
-		if (it == m_mRecordMap.end() || it->second.empty())
-			continue;
+		// No record-map requirement: sim records are never stored while
+		// DT-validated and backtrack records are cleared for dormant
+		// foes, so requiring them fails the guard open and the farm
+		// swings mid-fight with a close target. Live origin is enough
+		// to know there is someone to hit.
 		if (pLocal->GetAbsOrigin().DistTo(tTarget.m_pEntity->GetAbsOrigin()) <= kCritRefillCombatDistance)
 		{
 			bHasCombatSimulation = true;
@@ -1037,58 +1294,117 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 	for (auto& tTarget : vTargets)
 	{
 		const auto iResult = CanHit(tTarget, pLocal, pWeapon);
+		if (Vars::Doubletap::Doubletap.Value
+			&& (iResult || pWeapon->m_flSmackTime() > 0.f || F::Ticks.m_bDoubletap))
+		{
+			const Vec3 vFoe = tTarget.m_pEntity->m_vecOrigin();
+			DtTrace("T%d HIT res=%d foe=(%.1f,%.1f,%.1f) rec=%d frozen=%d",
+				I::GlobalVars->tickcount, (int)iResult, vFoe.x, vFoe.y, vFoe.z, tTarget.m_bBacktrack, m_bDtValidated);
+		}
 		if (!iResult) continue;
+		m_bFiringSolution = true;
+		G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
 		if (iResult == 2)
 		{
-			G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
 			Aim(pCmd, tTarget.m_vAngleTo);
 			ArmChargeTracking(tTarget);
 			break;
 		}
 
-		if (Vars::Aimbot::General::AutoShoot.Value && pWeapon->m_flSmackTime() < 0.f)
+		if (Vars::Aimbot::General::AutoShoot.Value && pWeapon->m_flSmackTime() < 0.f && G::CanPrimaryAttack)
 		{
-			// Instant damage needs the bank to span the whole smack delay.
-			// Partial bank: hold the swing while fakelag banks up (max ~15
-			// ticks), then fire anyway so strafers aren't missed. Empty bank
-			// or full coverage: fire immediately (normal / instant swing).
+			// (Press AND dump gated on CanPrimaryAttack: pressing during
+			// refire cooldown is ignored by the game but a dump would still
+			// drain the bank — swing starts late with an empty bank, misses,
+			// then pays full recovery. No press, no dump, no arm until the
+			// swing can actually start this tick. Stable and predictable.)
+			// Fire the instant validation passes — never wait for bank.
+			// Covered: full instant dump. Short: dump whatever is banked
+			// (partial instant head, ReleaseGoal floors at 0) and ride the
+			// remainder live, which re-validates live every tick by
+			// construction (unvalidated mode above). Waiting hugs the
+			// enemy, then fires a fully-live swing on stale validation:
+			// the worst of both worlds. (Rijin works exactly this way:
+			// its melee fires on validation unconditionally; the DT
+			// system shifts separately when charged.)
 			const int iBank = F::Ticks.m_iShiftedTicks;
 			const bool bCover = iBank >= m_iSwingTicks;
-			bool bPress = m_bShouldSwing || bCover;
-			if (bPress && !bCover && iBank > 0)
-			{
-				if (!m_iSwingHoldTick)
-					m_iSwingHoldTick = I::GlobalVars->tickcount;
-				if (I::GlobalVars->tickcount - m_iSwingHoldTick <= 15)
-					bPress = false;
-				else
-					m_iSwingHoldTick = 0;
-			}
-			else
-				m_iSwingHoldTick = 0;
+			const bool bPress = m_bDtValidated || m_bShouldSwing || bCover;
 			if (bPress)
+			{
 				pCmd->buttons |= IN_ATTACK;
+				m_bAimbotSwing = true;
+				// Snapshot the validated range: mid-swing recomputation can
+				// only shrink it (machine idles, manual charge released,
+				// meter drained) while the swing still flies — collapsing
+				// aim updates onto a stale base angle. The snapshot holds
+				// the validated reach for THIS swing; a live (undumped)
+				// tail keeps the honest recomputed range instead.
+				m_flPressRange = m_flRange;
+				// Stamp the target: downstream consumers (CritHack force,
+				// resolver, visuals) key off G::AimTarget. The aim-only
+				// branch stamps it, but the press path never did — forced
+				// crits then depended on stale leftovers (sometimes set,
+				// sometimes not). We ARE attacking this entity.
+				G::AimTarget = { tTarget.m_pEntity->entindex(), I::GlobalVars->tickcount, 0 };
+			}
+			DtTrace("T%d PRESS press=%d cover=%d bank=%d need=%d dtFrozen=%d shouldSwing=%d",
+				I::GlobalVars->tickcount, bPress, bCover, iBank, m_iSwingTicks, m_bDtValidated, m_bShouldSwing);
 			// Melee dump policy: bank >= smack window suffices (generic
 			// GetTicks demands TickLimit and m_iWait refuses chained swings,
-			// so banked re-presses would never go instant). No dump on a
-			// charge-arming press: the swing then plays in normal time so
-			// the sequence counts deterministically; impact still lands
-			// instantly via the Charge-press collapse above.
+			// so banked re-presses would never go instant). Fires on
+			// charge-arming presses too: the swing collapses instantly,
+			// charge sequences off the execution count. Flag AND goal:
+			// Move() drains only on shifted>goal, a flag alone never dumps.
+			// min() + fresh-only so a deeper tailored dump is never cut.
+			// m_bRecharge is NOT a blocker: it is set on every tick the bank
+			// is still filling, which is exactly when a covered swing must
+			// dump. Recharge() stands down once m_bDoubletap is armed, so the
+			// dump preempts it cleanly.
 			const bool bDumpUsable = Vars::Doubletap::Doubletap.Value
-				&& !F::Ticks.m_bWarp && !F::Ticks.m_bRecharge && !F::Ticks.m_bSpeedhack
+				&& !F::Ticks.m_bWarp && !F::Ticks.m_bSpeedhack
 				&& !F::AutoRocketJump.IsRunning();
 			const bool bDumpReady = m_iDoubletapTicks > 0
-				|| (F::Ticks.m_iShiftedTicks >= m_iSwingTicks && bDumpUsable);
-			if (bDumpReady && !ChargeWillArm() && !IsChargeBusy())
+				|| (F::Ticks.m_iShiftedTicks >= m_iSwingTicks && bDumpUsable)
+				// Partial: spend whatever is banked. Anything spendable
+				// shortens the live tail by that many instant ticks;
+				// firing now with 6 instant + 8 live beats waiting 8 ticks
+				// for full cover and swinging fully live into a moved foe.
+				|| (bDumpUsable && F::Ticks.m_iShiftedTicks > F::Ticks.m_iShiftedGoal);
+			DtTrace("T%d DUMP ready=%d busy=%d armed=%d bank=%d goal=%d", I::GlobalVars->tickcount,
+				bDumpReady, IsChargeBusy(), F::Ticks.m_bDoubletap, F::Ticks.m_iShiftedTicks, F::Ticks.m_iShiftedGoal);
+			if (bDumpReady && (!IsChargeBusy() || m_eChargeState == ChargeState::Charge) && !F::Ticks.m_bDoubletap)
+			{
 				F::Ticks.m_bDoubletap = true;
+				F::Ticks.m_iShiftedGoal = std::min(F::Ticks.m_iShiftedGoal, F::Ticks.ReleaseGoal(std::max(m_iSwingTicks, 1)));
+			}
 		}
+		else
+			m_iSwingHoldTick = 0;
 
 		G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);
 		ArmChargeTracking(tTarget);
 		if (G::Attacking == 1)
 		{
-			if (tTarget.m_bBacktrack)
-				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime + F::Backtrack.GetFakeInterp());
+			// Rewind target = aimed position's time, EVERY attacking tick.
+			// Sub-tick commands carry advancing tick_counts; without the
+			// overwrite the server rewinds to (or past) process time and a
+			// moving foe walks out of the aimed line — client prediction
+			// clangs on batch-start positions while the server misses
+			// (clang with no damage). Live winners stamp the live sim time:
+			// static across the dump, same guarantee as record stamps.
+			// (Reached only post-validation: failed targets `continue`
+			// above, so manual swings keep CreateMove's default.)
+			if (tTarget.m_pRecord)
+			{
+				const bool bHist = tTarget.m_bBacktrack;
+				const float flAimTime = bHist ? tTarget.m_pRecord->m_flSimTime
+					: tTarget.m_pEntity->m_flSimulationTime();
+				pCmd->tick_count = TIME_TO_TICKS(flAimTime + F::Backtrack.GetFakeInterp());
+				if (Vars::Doubletap::Doubletap.Value)
+					DtTrace("T%d STAMP tick=%d recSim=%.3f live=%d", I::GlobalVars->tickcount,
+						pCmd->tick_count, flAimTime, bHist ? 0 : 1);
+			}
 			// bug: fast old records seem to be progressively more unreliable ?
 		}
 		else
@@ -1115,18 +1431,103 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		}
 		break;
 	}
+	// Swing-in-flight failsafe: ours (validated press) but NOTHING validates
+	// this tick (stale records, blipped dormancy) — the resolve command
+	// would keep camera angles and the smack is donated. Re-aim at the
+	// nearest live enemy IN REACH instead. Manual swings (wall tests) are
+	// never touched: no latch, no re-aim, no stamp. Silent/Locking only
+	// (visible-aim contracts untouched).
+	if (!m_bFiringSolution && m_bAimbotSwing && pWeapon->m_flSmackTime() > 0.f
+		&& (Vars::Aimbot::General::AimType.Value == Vars::Aimbot::General::AimTypeEnum::Silent
+		|| Vars::Aimbot::General::AimType.Value == Vars::Aimbot::General::AimTypeEnum::Locking))
+	{
+		CBaseEntity* pBestFoe = nullptr; float flBestDistSqr = FLT_MAX;
+		const float flEmergRange = m_flRange + 32.f; // hull + re-approach slack
+		for (auto& tEmerg : vTargets)
+		{
+			if (!tEmerg.m_pEntity || tEmerg.m_pEntity->m_iTeamNum() == pLocal->m_iTeamNum())
+				continue;
+			const Vec3 vEC = tEmerg.m_pEntity->GetAbsOrigin() + (tEmerg.m_pEntity->m_vecMins() + tEmerg.m_pEntity->m_vecMaxs()) * 0.5f;
+			const float flD = vEC.DistToSqr(m_vEyePos);
+			if (flD < flBestDistSqr && flD <= flEmergRange * flEmergRange)
+				flBestDistSqr = flD, pBestFoe = tEmerg.m_pEntity;
+		}
+		if (pBestFoe)
+		{
+			const Vec3 vFC = pBestFoe->GetAbsOrigin() + (pBestFoe->m_vecMins() + pBestFoe->m_vecMaxs()) * 0.5f;
+			if (vFC.DistToSqr(m_vEyePos) >= 1.f)
+			{
+				Vec3 vEmergency = Math::CalcAngle(m_vEyePos, vFC);
+				Math::ClampAngles(vEmergency);
+				SDK::FixMovement(pCmd, vEmergency);
+				pCmd->viewangles = vEmergency;
+				G::PSilentAngles = true;
+				// Same rewind rule as aimed swings: the written angles
+				// target this foe's live position, so stamp its time —
+				// else movers walk out server-side (clang, no damage).
+				pCmd->tick_count = TIME_TO_TICKS(pBestFoe->m_flSimulationTime() + F::Backtrack.GetFakeInterp());
+				if (Vars::Doubletap::Doubletap.Value)
+					DtTrace("T%d STAMP tick=%d recSim=%.3f live=2", I::GlobalVars->tickcount,
+						pCmd->tick_count, pBestFoe->m_flSimulationTime());
+			}
+		}
+	}
+	// Verdict line: the resolve tick. Final eye + aim angles leaving this
+	// tick, so a miss is judged against the stamped record and DMG lines.
+	// (Tail compression was deleted: it converted live-validated swings
+	// mid-flight, resolving against a different world than validated.)
+	if (Vars::Doubletap::Doubletap.Value && pWeapon->m_flSmackTime() > 0.f
+		&& TIME_TO_TICKS(std::max(pWeapon->m_flSmackTime() - I::GlobalVars->curtime, 0.f)) == 0)
+	{
+		const Vec3 vEyeNow = pLocal->GetShootPos();
+		DtTrace("T%d SMACK eye=(%.1f,%.1f,%.1f) ang=(%.1f,%.1f,%.1f)", I::GlobalVars->tickcount,
+			vEyeNow.x, vEyeNow.y, vEyeNow.z, pCmd->viewangles.x, pCmd->viewangles.y, pCmd->viewangles.z);
+	}
+	// Charge cooperation lives entirely in the Tracking machine above
+	// (execution count: Early = 2 ticks after swing start, Late = 2 ticks
+	// before damage; dump-batch ticks count identically to live ones)
+	// plus the warp claim/replay schedule. No standalone proximity
+	// charging: charge never fires without a swing in flight.
 	// Auto-warp press (Normal: with the claim; Full: arrival solved the same
 	// way, server resolves the smack inside stopped time). Additive only,
 	// after the hold logic so banking never vetoes it. Stamps AimTarget so
 	// crosshair-backtrack yields the tick the claim already set.
 	if (F::AutoTrickstab.WarpPressDue() && G::CanPrimaryAttack && pWeapon->m_flSmackTime() < 0.f)
 	{
+		// Aimbot aims the decisive tick: re-solve live from the current eye
+		// through the real firing path. Accept ONLY a verified solution
+		// (record stamped under the same backtrack rule as the loop); else
+		// the claim-frozen one, whose record the claim already stamped.
+		// Verified-only keeps the plan's guarantee under live aim — never
+		// drifted travel angles, never center-mass guesswork.
+		Vec3 vPressAim = F::AutoTrickstab.WarpAim();
+		if (auto pWE = I::ClientEntityList->GetClientEntity(F::AutoTrickstab.WarpEnt()))
+		{
+			if (!pWE->IsDormant())
+			{
+				if (CTFPlayer* pWT = pWE->As<CTFPlayer>(); pWT && pWT->IsAlive())
+				{
+					const Vec3 vEyeNow = pLocal->GetShootPos();
+					Target_t tLive{ pWT, TargetEnum::Player, pWT->GetCenter(), Math::CalcAngle(vEyeNow, pWT->GetCenter()), 0.f, 0.f, 0 };
+					if (SolveWarpAim(tLive, pLocal, pWeapon, vEyeNow))
+					{
+						vPressAim = tLive.m_vAngleTo;
+						if (tLive.m_bBacktrack && tLive.m_pRecord)
+							pCmd->tick_count = TIME_TO_TICKS(tLive.m_pRecord->m_flSimTime + F::Backtrack.GetFakeInterp());
+					}
+				}
+			}
+		}
+		SDK::FixMovement(pCmd, vPressAim);
+		pCmd->viewangles = vPressAim;
+		G::PSilentAngles = true;
 		pCmd->buttons |= IN_ATTACK;
 		G::Attacking = SDK::IsAttacking(pLocal, pWeapon, pCmd, true);
 		G::AimTarget = { F::AutoTrickstab.WarpEnt(), I::GlobalVars->tickcount, 0 };
 		G::AimPoint = { F::AutoTrickstab.WarpDest() + pLocal->m_vecViewOffset(), I::GlobalVars->tickcount };
-		if (F::AutoTrickstab.WarpWantsCharge())
-			ArmChargeForWarp(pCmd, F::AutoTrickstab.WarpEnt());
+		// NOTE: no charge press here — charge sequences inside stopped time
+		// via the replay schedule. Same cmd carrying swing+charge breaks
+		// engine-side (one eats the other).
 	}
 }
 

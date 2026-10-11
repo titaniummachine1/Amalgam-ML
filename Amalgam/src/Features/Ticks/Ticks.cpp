@@ -8,6 +8,8 @@
 #include "../Aimbot/AutoRocketJump/AutoRocketJump.h"
 #include "../Backtrack/Backtrack.h"
 #include "../AntiCheatCompatibility/AntiCheatCompatibility.h"
+#include "../CritHack/CritHack.h"
+#include "../../Utils/DtTrace/DtTrace.h"
 
 void CTicks::Reset()
 {
@@ -21,13 +23,34 @@ void CTicks::Recharge(CTFPlayer* pLocal)
 		return;
 
 	// Post-warp blackout: no recharge of any kind until enemy damage/kill
-	// clears it or 13 ticks pass. Decrements on MoveManage cadence. The
+	// clears it or 7 ticks pass. Decrements on MoveManage cadence. The
 	// commit itself never reaches here (m_bWarp guard below returns first),
 	// so the hold strictly covers AFTER release.
 	if (m_iPostWarpHold > 0)
 	{
 		m_iPostWarpHold--;
 		return;
+	}
+	// Sequence-active blackout (user rule): while a warp commit or a DT
+	// swing sequence is live on a target, NOTHING banks — no goal writes,
+	// no deficit payback, no passive ticks — moving bank/goal mid-sequence
+	// destabilizes the warp/DT math the validation was built on. Resumes
+	// after execution + damage, else 7 ticks past sequence end.
+	{
+		auto pSeqWeapon = H::Entities.GetWeapon();
+		const bool bSeqActive = F::AutoTrickstab.IsCommitting()
+			|| (pSeqWeapon && pSeqWeapon->m_flSmackTime() > 0.f)
+			|| m_bDoubletap || m_bWarp;
+		if (bSeqActive)
+		{
+			if (I::GlobalVars->tickcount - m_iSequenceEndTick > 7)
+				m_iSequenceStartTick = I::GlobalVars->tickcount;
+			m_iSequenceEndTick = I::GlobalVars->tickcount;
+			return;
+		}
+		if (I::GlobalVars->tickcount - m_iSequenceEndTick <= 7
+			&& m_iLastDamageTick < m_iSequenceStartTick)
+			return;
 	}
 	bool bPassive = m_bRecharge = false;
 
@@ -39,15 +62,15 @@ void CTicks::Recharge(CTFPlayer* pLocal)
 		flPassiveTime += 1.f / Vars::Doubletap::PassiveRecharge.Value;
 	}
 
+	if (!Vars::Doubletap::RechargeTicks.Value && !bPassive
+		|| m_bDoubletap || m_bWarp || m_iShiftedTicks == m_iMaxShift || m_bSpeedhack)
+		return;
+
 	if (m_iDeficit)
 	{
 		bPassive = true;
 		m_iDeficit--, m_iShiftedTicks--;
 	}
-
-	if (!Vars::Doubletap::RechargeTicks.Value && !bPassive
-		|| m_bDoubletap || m_bWarp || m_iShiftedTicks == m_iMaxShift || m_bSpeedhack)
-		return;
 
 	m_bRecharge = true;
 	m_iShiftedGoal = m_iShiftedTicks + 1;
@@ -84,6 +107,7 @@ void CTicks::OnEnemyDamage(IGameEvent* pEvent)
 		return;
 	m_iLastDamageTick = I::GlobalVars->tickcount;
 	m_iPostWarpHold = 0;
+	DtTrace("T%d DMG victim=%d", I::GlobalVars->tickcount, pEvent->GetInt("userid"));
 }
 
 void CTicks::OnEnemyKill(IGameEvent* pEvent)
@@ -92,12 +116,14 @@ void CTicks::OnEnemyKill(IGameEvent* pEvent)
 		return;
 	m_iLastDamageTick = I::GlobalVars->tickcount;
 	m_iPostWarpHold = 0;
-	// Kill spike: +4 bank NOW, clamped to max. Moot when already maxed
-	// (auto-recharge maxed included) — the clamp IS the special case, no
-	// separate branch. Goal raised with it so no phantom burst follows.
-	const int iBank = std::min(m_iShiftedTicks + 4, m_iMaxShift);
-	m_iShiftedGoal = std::max(m_iShiftedGoal, iBank);
-	m_iShiftedTicks = iBank;
+	DtTrace("T%d KILL victim=%d", I::GlobalVars->tickcount, pEvent->GetInt("userid"));
+	// Kill spike: +4 bank NOW, clamped to max, independent of passive
+	// recharge or any setting — always. Both ends shift together so the
+	// bank-goal spread (an in-flight dump's remaining length) survives;
+	// max() on the goal alone would collapse the spread and cancel the
+	// dump. Moot when already maxed — the clamp IS the special case.
+	m_iShiftedTicks = std::min(m_iShiftedTicks + 4, m_iMaxShift);
+	m_iShiftedGoal = std::min(m_iShiftedGoal + 4, m_iMaxShift);
 }
 
 int CTicks::ReleaseGoal(int iTicks)
@@ -159,14 +185,27 @@ void CTicks::Doubletap(CTFPlayer* pLocal, CUserCmd* pCmd)
 	if (!(iTicks >= Vars::Doubletap::TickLimit.Value || pWeapon && GetShotsWithinPacket(pWeapon, iTicks) > 1))
 		return;
 
-	bool bAttacking = G::PrimaryWeaponType == EWeaponType::MELEE ? pCmd->buttons & IN_ATTACK : G::Attacking;
+	// Design rule: bank spends only for target-validated swings. A refill
+	// farm swing (no enemy anywhere near) or a manual air swing (no firing
+	// solution this tick) sets IN_ATTACK but must never shift — the bank
+	// belongs to the next real fight. m_bFiringSolution is reset every
+	// melee Run and set only by a CanHit validation, so it is always fresh
+	// here (driver runs after the aimbot, incl. every drained tick).
+	bool bAttacking = G::PrimaryWeaponType == EWeaponType::MELEE
+		? (pCmd->buttons & IN_ATTACK) && !F::CritHack.m_bCritRefillActive && F::AimbotMelee.m_bFiringSolution
+			&& pWeapon && pWeapon->m_flSmackTime() < 0.f
+		: G::Attacking;
 	if (!G::CanPrimaryAttack && !G::Reloading || !bAttacking && !m_bDoubletap || F::AutoRocketJump.IsRunning())
 		return;
+	if (m_bDoubletap)
+		return; // already armed: never retarget its goal (a TickLimit rewrite can shorten it mid-sequence)
+	DtTrace("T%d DRIVER arm bank=%d melee=%d attacking=%d",
+		I::GlobalVars->tickcount, m_iShiftedTicks, G::PrimaryWeaponType == EWeaponType::MELEE, bAttacking);
 
 	m_bDoubletap = true;
 	m_iShiftedGoal = std::max(m_iShiftedTicks - Vars::Doubletap::TickLimit.Value + 1, 0);
 	if (Vars::Doubletap::AntiWarp.Value)
-		m_bAntiWarp = pLocal->m_hGroundEntity();
+		m_bAntiWarp = pLocal->m_hGroundEntity() && !pLocal->InCond(TF_COND_SHIELD_CHARGE);
 }
 
 void CTicks::Speedhack()
@@ -275,6 +314,8 @@ void CTicks::Move(float accumulated_extra_samples, bool bFinalTick)
 	m_iShiftedGoal = std::clamp(m_iShiftedGoal, 0, m_iMaxShift);
 	if (m_iShiftedTicks > m_iShiftedGoal) // normal use/doubletap/teleport
 	{
+		DtTrace("T%d DRAIN start bank=%d goal=%d dt=%d warp=%d recharge=%d",
+			I::GlobalVars->tickcount, m_iShiftedTicks, m_iShiftedGoal, m_bDoubletap, m_bWarp, m_bRecharge);
 		m_iShiftStart = m_iShiftedTicks - 1;
 		m_bShifted = false;
 
@@ -386,7 +427,13 @@ void CTicks::ManagePacket(CUserCmd* pCmd, bool* pSendPacket)
 void CTicks::Start(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
 	Vec2 vOriginalMove; int iOriginalButtons;
-	if (m_bPredictAntiwarp = m_bAntiWarp || GetTicks(H::Entities.GetWeapon()) && Vars::Doubletap::AntiWarp.Value && pLocal->m_hGroundEntity())
+	// Charging skips prediction-time AntiWarp entirely (both disjuncts):
+	// the charge flies for real (dump executes its travel), so predicting
+	// with rewritten moves would aim from a frozen fiction. The outer
+	// !charging guard also covers a stale armed flag across the transition
+	// tick where the condition sets mid-batch.
+	const bool bChargingNow = pLocal->InCond(TF_COND_SHIELD_CHARGE);
+	if (m_bPredictAntiwarp = !bChargingNow && (m_bAntiWarp || GetTicks(H::Entities.GetWeapon()) && Vars::Doubletap::AntiWarp.Value && pLocal->m_hGroundEntity()))
 	{
 		vOriginalMove = { pCmd->forwardmove, pCmd->sidemove };
 		iOriginalButtons = pCmd->buttons;

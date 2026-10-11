@@ -78,6 +78,13 @@ public:
 	int m_iDeficit = 0;
 	int m_iPostWarpHold = 0;
 	int m_iLastDamageTick = 0;
+	// Sequence-active blackout end: recharge resumes after execution +
+	// damage, else 7 ticks past sequence end (user rule). Updated on every
+	// Recharge call while a warp commit or swing sequence is live.
+	int m_iSequenceEndTick = 0;
+	// Sequence start (same cadence): damage since START releases the tail
+	// immediately (mid-sequence kills count), else the 7-tick wait applies.
+	int m_iSequenceStartTick = 0;
 };
 
 ADD_FEATURE(CTicks, Ticks);

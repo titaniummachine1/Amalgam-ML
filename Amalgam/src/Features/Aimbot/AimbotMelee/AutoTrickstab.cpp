@@ -504,12 +504,16 @@ static bool WarpHitAt(const Vec3& vEye, CTFPlayer* pTarget, const Vec3& vFeet,
 	return bHit;
 }
 
-// Auto warp (non-knife melee): straight warp-to-hit. Walks at the target in
-// stopped time and claims the first tick a swing connects (live body, then
-// newest valid record). Normal takes the first connect (shortest warp);
-// Full walks the whole bank, takes the first connect (no waste), and holds
-// the swing until arrival-minus-smack so impact lands exactly on arrival. The
-// press rides the claim (end-of-Run override in the melee aimbot); the
+// Auto warp (non-knife melee): straight warp-to-hit. Stopped time covers
+// travel AND the full smack: the swing executes at sim tick t_s and the
+// smack resolves at t_s + smack ticks, both inside the warp, so impact
+// lands exactly on warp end (instant damage). Normal swings on the claim
+// tick and walks the whole smack window (fixed instant swing); Full swings
+// at its arrival tick (travel + smack, shortest honest warp). Walks at the
+// target in stopped time and claims the first tick a swing connects (live
+// body, then newest valid record). The press rides the claim (end-of-Run
+// override in the melee aimbot); charge sequences inside stopped time via
+// the replay schedule (Early/Late), never sharing the swing tick. The
 // server resolves the smack inside stopped time either way. No behind-cone,
 // no orbit, no warp-back. Compact with the stab claim: same latch (generic
 // Warp() yields to it), same honesty (bank covers exact length), same
@@ -524,7 +528,12 @@ void CAutoTrickstab::WarpDirect(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 	if (m_bCommitting && m_bWarpDirect)
 	{
 		auto pE = I::ClientEntityList->GetClientEntity(m_iWarpEnt);
-		CTFPlayer* pExec = (pE && !pE->IsDormant() && pE->As<CTFPlayer>()->IsAlive()) ? pE->As<CTFPlayer>() : nullptr;
+		CTFPlayer* pExec = nullptr;
+		if (pE && !pE->IsDormant())
+		{
+			if (CTFPlayer* pC = pE->As<CTFPlayer>(); pC && pC->IsAlive())
+				pExec = pC;
+		}
 		if (!pExec)
 		{
 			m_bCommitting = false;
@@ -532,19 +541,51 @@ void CAutoTrickstab::WarpDirect(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 			m_iCommitLeft = 0;
 			m_iBonusLeft = 0;
 			m_iWarpEnt = -1;
-			F::Ticks.HoldRecharge(13, m_iClaimTick);
+			F::Ticks.HoldRecharge(7, m_iClaimTick);
 			return;
 		}
-		const Vec3 vAim = Math::CalcAngle(pLocal->GetShootPos(), pExec->m_vecOrigin() + pExec->m_vecViewOffset());
-		pCmd->viewangles.x = vAim.x;
-		pCmd->viewangles.y = vAim.y;
-		Vec3 vDir = pExec->m_vecOrigin() - pLocal->m_vecOrigin();
-		vDir.z = 0.f;
-		if (vDir.Length2D() >= 1.f)
+		// Press discipline: while the solved press hasn't fired, strip attack
+		// buttons (manual hold) so no early swing starts — the swing must
+		// begin at arrival-minus-smack, never before. Post-press the smack
+		// gate reopens it (harmless: weapon busy then).
+		if (!WarpPressDue() && pWeapon->m_flSmackTime() < 0.f)
+			pCmd->buttons &= ~IN_ATTACK;
+	// Live charge schedule (travel coverage the claim tick can't give):
+	// Early rides from the first post-press tick (1 tick after swing
+	// start: smack in flight); Late pops 1 tick before damage lands.
+	// Never on a swing-press tick (mirror of the override below):
+	// same-cmd swing+charge breaks engine-side.
+	{
+		const bool bEarlyNow = (Vars::Aimbot::Melee::ChargeTiming.Value == Vars::Aimbot::Melee::ChargeTimingEnum::Early);
+		const bool bSwingNow = WarpPressDue() && G::CanPrimaryAttack && pWeapon->m_flSmackTime() < 0.f;
+		const int iRemaining = F::Ticks.m_iShiftedTicks - F::Ticks.m_iShiftedGoal;
+		if (m_bWarpCharge && !bSwingNow
+			&& (bEarlyNow ? (pWeapon->m_flSmackTime() > 0.f) : (iRemaining <= 1)))
+			pCmd->buttons |= IN_ATTACK2;
+	}
+	// Frozen solved direction (verified FROM the dest at claim): the smack
+	// resolves with exactly this, never drifted travel angles. The loop
+	// re-aims live when it sees the target itself post-arrival.
+	pCmd->viewangles = m_vWarpAim;
+	// Mirror the sim exactly: walk TO the planned dest, then HOLD it.
+	// The sim stops at the connect tick (Normal holds, Full arrives) and
+	// verifies the swing FROM there — chasing the live target past it
+	// would resolve the smack from thin air (the one-tick-too-far miss).
+	{
+		Vec3 vTo = m_vWarpDest - pLocal->m_vecOrigin();
+		vTo.z = 0.f;
+		if (vTo.Length2D() >= 1.f)
 		{
-			vDir.Normalize2D();
-			PlantMoves(pLocal, pCmd, vDir);
+			vTo.Normalize2D();
+			PlantMoves(pLocal, pCmd, vTo);
 		}
+		else
+		{
+			pCmd->forwardmove = 0.f;
+			pCmd->sidemove = 0.f;
+			pCmd->buttons &= ~(IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT);
+		}
+	}
 		m_iCommitAge++;
 		if (!F::Ticks.m_bWarp || m_iCommitAge > 90)
 		{
@@ -553,7 +594,7 @@ void CAutoTrickstab::WarpDirect(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 			m_iCommitLeft = 0;
 			m_iBonusLeft = 0;
 			m_iWarpEnt = -1;
-			F::Ticks.HoldRecharge(13, m_iClaimTick);
+			F::Ticks.HoldRecharge(7, m_iClaimTick);
 		}
 		else if (m_iCommitLeft > 0)
 			m_iCommitLeft--;
@@ -562,31 +603,50 @@ void CAutoTrickstab::WarpDirect(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 	if (m_bCommitting)
 		return; // stab owns the latch (weapon-switch edge): hands off
 
-	if (F::AimbotMelee.IsChargeBusy() || F::Ticks.m_bWarp || F::Ticks.m_bDoubletap || F::Ticks.m_bSpeedhack)
-		return; // collapse it later, not mid-flight
+	if (F::Ticks.m_bWarp || F::Ticks.m_bDoubletap || F::Ticks.m_bSpeedhack)
+		return; // collapse it later, not mid-flight (NOTE: charge-busy does
+		// NOT gate here — Tracking arms on approach/CanHit, and a stale
+		// armed-no-swing state would veto every warp forever. A genuine
+	// mid-sequence is excluded by the fresh-swing gate below anyway,
+		// and the Tracking machine recounts off the warp's own smack.
+	if (pLocal->InCond(TF_COND_HALLOWEEN_KART))
+		return; // warp has no business in a kart
+	// Fresh swings only: a warp claimed mid-swing travels under a live smack
+	// that resolves mid-path (never at the planned arrival) — sequential
+	// swing-then-warp that always misses. The warp presses its own swing.
+	if (pWeapon->m_flSmackTime() >= 0.f || !G::CanPrimaryAttack)
+		return;
 
 	const bool bFull = (Vars::Aimbot::Melee::AutoWarpMode.Value == Vars::Aimbot::Melee::AutoWarpModeEnum::Full);
 	const int iSmackTicks = std::max((int)ceilf(pWeapon->GetSmackDelay() / TICK_INTERVAL), 1);
-	// Charge assumption for sim speeds. The live machine arms off the warp
-	// press and fires ASAP in collapsed time, so both sides must agree:
-	// Early runs the whole window charged; Late charges the smack-2 tail
-	// inside the window, exactly like the live Timing law.
+	// Charge eligibility for the warp: travel itself is always walk speed
+	// (the charge only starts after the swing, so it can never help travel
+	// that precedes it); the charged 128u range applies to the swing that
+	// resolves at warp end. The live Timing law still governs non-warp
+	// swings untouched.
 	const bool bChargeSim = Vars::Aimbot::Melee::ChargeReach.Value
 		&& pLocal->m_iClass() == TF_CLASS_DEMOMAN
 		&& pLocal->m_flChargeMeter() >= 100.f
 		&& !pLocal->InCond(TF_COND_SHIELD_CHARGE);
-	const bool bChargeEarly = bChargeSim && (Vars::Aimbot::Melee::ChargeTiming.Value == Vars::Aimbot::Melee::ChargeTimingEnum::Early);
-	const float flWalk = SDK::MaxSpeed(pLocal);
-	const float flChargeSp = std::max(flWalk, 750.f);
 	const Vec3 vEyeOff = pLocal->m_vecViewOffset();
-	const Vec3 vOMin = pLocal->m_vecMins(), vOMax = pLocal->m_vecMaxs();
-	const int iWindow = bFull ? std::max(std::min(iBank, 32), 1) : iSmackTicks;
-	if (iBank < iWindow)
-		return; // bank must cover the exact length, both modes
-	int iWalked = 0;
+	// Stopped-time law: the warp owns travel AND the full smack delay.
+	// The swing executes at sim tick t_s (Normal: the claim tick itself;
+	// Full: the arrival tick), the smack resolves at t_s + iSmackTicks,
+	// and the warp covers it all so impact lands inside stopped time.
+	// Minimum honest length is the smack window (zero travel); Full adds
+	// travel up to what the bank covers past the smack.
+	if (iBank < iSmackTicks)
+		return;
+	const int iWindow = bFull ? std::max(std::min(iBank - iSmackTicks, 32), 1) : iSmackTicks;
+	// Charged range the swing resolves with (live law: charging forces
+	// 128u). Used for arrival detection and the final verify; travel
+	// itself is always walk speed (the charge only starts after the
+	// swing, so it can never help travel that precedes it).
+	const float flHitRange = bChargeSim ? std::max(flRange, 128.f) : flRange;
 
 	CTFPlayer* pBestEnt = nullptr;
 	Vec3 vBestDest = {};
+	Vec3 vSolvedAngle = {};
 	int iBestLen = -1;
 	float flBestSimTime = 0.f;
 	bool bFound = false;
@@ -605,56 +665,121 @@ void CAutoTrickstab::WarpDirect(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 				pRec = vRecs.front();
 		}
 		Vec3 vSim = vMyPos;
-		Vec3 vStep = vSim;
-		CTraceFilterHitscan walkFilter = {};
-		walkFilter.pSkip = pLocal;
-		for (int t = 1; t <= iWindow; t++)
+		// Engine-sim walk (the SAME MoveSim the aimbot sims with): per-tick
+		// wishdir toward the target, from the TRUE live state (velocity
+		// included). Deliberately NO AntiWarp composition: live warp
+		// drains execute without the flag (DT never arms under warp,
+		// the driver yields to it, GetTicks reads 0 while it runs), so
+		// the replay flies pure engine physics. Composing phases here
+		// that execution never applies under-predicts travel whenever
+		// momentum exists (backpedal in, crawl out) and the claim's tick
+		// mapping breaks — the backwards-walking fumble. Plan == replay:
+		// same engine, same start, same moves, deterministic. No Euler,
+		// no manual traces — what the sim walks here is what the drain
+		// executes.
+		std::unordered_map<int, MoveStorage> mMoveStorage;
+		F::MoveSim.Initialize(pLocal, mMoveStorage[pLocal->entindex()], false, false, false);
+		// Arrival tick 0: already in range at claim. Honest in both modes:
+		// Normal swings on the claim tick anyway; Full with zero travel is
+		// just a fixed instant swing (press at 0, resolves at the window).
+		{
+			const Vec3 vEye0 = vSim + vEyeOff;
+			bool bHit0 = WarpHitAt(vEye0, pTarget, pTarget->m_vecOrigin(), vTMin, vTMax, flHitRange, vSwingMins, vSwingMaxs, pLocal);
+			if (!bHit0 && pRec)
+				bHit0 = WarpHitAt(vEye0, pTarget, pRec->m_vOrigin, pRec->m_vMins, pRec->m_vMaxs, flHitRange, vSwingMins, vSwingMaxs, pLocal);
+			if (bHit0)
+			{
+				const Vec3 vCenter0 = pTarget->GetCenter();
+				Target_t tCand0{ pTarget, TargetEnum::Player, vCenter0, Math::CalcAngle(vEye0, vCenter0), 0.f, vEye0.DistToSqr(vCenter0), 0 };
+				if (F::AimbotMelee.SolveWarpAim(tCand0, pLocal, pWeapon, vEye0, flHitRange))
+				{
+					bFound = true;
+					pBestEnt = pTarget;
+					iBestLen = 0;
+					flBestSimTime = tCand0.m_pRecord ? tCand0.m_pRecord->m_flSimTime : pTarget->m_flSimulationTime();
+					vSolvedAngle = tCand0.m_vAngleTo;
+					vBestDest = vSim;
+				}
+			}
+		}
+		for (int t = 1; t <= iWindow && !(bFull && bFound); t++)
 		{
 			Vec3 vTo = pTarget->m_vecOrigin() - vSim;
 			vTo.z = 0.f;
 			const float flD = vTo.Length2D();
-			if (flD < 1.f)
-				break;
-			const bool bChargeTick = bChargeEarly || (bChargeSim && !bChargeEarly && t >= iSmackTicks - 2);
-			const float flSp = bChargeTick ? flChargeSp : flWalk;
-			vSim = vSim + (vTo * (1.f / flD)) * std::min(flSp * TICK_INTERVAL, flD);
-			// Wall-clip the segment (no engine sim here): a walk that ends
-			// at a wall can only claim hits with clean LOS anyway, and the
-			// trace below enforces exactly that.
-			CGameTrace wtr = {};
-			SDK::TraceHull(vStep, vSim, vOMin, vOMax, MASK_SOLID, &walkFilter, &wtr);
-			const bool bBlocked = wtr.fraction < 1.f && wtr.m_pEnt != pTarget;
-			vSim = wtr.endpos;
-			vStep = vSim;
+			// Hover, never break on arrival: Normal must walk the whole
+			// smack window (the swing resolves at the window end, from the
+			// end pos), and Full stops itself via the loop condition.
+			bool bBlocked = false;
+			// Normal holds its verified connect for the rest of the window
+			// (the swing resolves FROM there: exact solution, no drift).
+			const bool bStep = (flD >= 1.f && (bFull || !bFound));
+			auto& tLS = mMoveStorage[pLocal->entindex()];
+			if (bStep)
+			{
+				const float flYaw = atan2f(vTo.y, vTo.x) * TRICKSTAB_RAD2DEG;
+				tLS.m_MoveData.m_vecViewAngles = { 0.f, flYaw, 0.f };
+				tLS.m_MoveData.m_flForwardMove = TRICKSTAB_MOVE_SPEED;
+				tLS.m_MoveData.m_flSideMove = 0.f;
+				tLS.m_MoveData.m_flUpMove = 0.f;
+			}
+			else
+			{
+				tLS.m_MoveData.m_flForwardMove = 0.f;
+				tLS.m_MoveData.m_flSideMove = 0.f;
+				tLS.m_MoveData.m_flUpMove = 0.f;
+			}
+		// No AntiWarp composition here (see walk header): the replay runs
+		// without the flag, and phased moves the drain never applies
+		// only desync the claim. Momentum turns around honestly under
+		// engine friction; the arrival tick (and the bank honesty gate)
+		// reflects the real travel cost.
+		const Vec3 vPrev = vSim;
+			F::MoveSim.RunTick(tLS);
+			vSim = tLS.m_MoveData.m_vecAbsOrigin;
+			if (bStep && (vSim - vPrev).Length2D() < 0.5f)
+				bBlocked = true; // engine says walled: test here, then stop
 			vBestDest = vSim; // arrival tracks the walk (Full stops at its hit, Normal at window end)
 			const Vec3 vEye = vSim + vEyeOff;
-			bool bHit = WarpHitAt(vEye, pTarget, pTarget->m_vecOrigin(), vTMin, vTMax, flRange, vSwingMins, vSwingMaxs, pLocal);
-			bool bRec = false;
+			bool bHit = WarpHitAt(vEye, pTarget, pTarget->m_vecOrigin(), vTMin, vTMax, flHitRange, vSwingMins, vSwingMaxs, pLocal);
 			if (!bHit && pRec)
-				bHit = bRec = WarpHitAt(vEye, pTarget, pRec->m_vOrigin, pRec->m_vMins, pRec->m_vMaxs, flRange, vSwingMins, vSwingMaxs, pLocal);
-			iWalked = t; // walked ticks (wall ends the walk below, dest matches)
+				bHit = WarpHitAt(vEye, pTarget, pRec->m_vOrigin, pRec->m_vMins, pRec->m_vMaxs, flHitRange, vSwingMins, vSwingMaxs, pLocal);
 			if (bHit && !bFound)
 			{
-				// First connect wins in both modes (no wasted ticks). Normal
-				// keeps walking the smack window for the arrival point below;
-				// Full stops here: length is this tick exactly.
+				// Verify through the actual firing solution FROM here: the
+				// same gates, clamp-point math and record choice as the swing
+				// that will execute (frozen target assumed, same as the walk).
+				// Unverifiable here = keep scanning, never claim blind.
+				const Vec3 vCenter = pTarget->GetCenter();
+				Target_t tCand{ pTarget, TargetEnum::Player, vCenter, Math::CalcAngle(vEye, vCenter), 0.f, vEye.DistToSqr(vCenter), 0 };
+				if (!F::AimbotMelee.SolveWarpAim(tCand, pLocal, pWeapon, vEye, flHitRange))
+					continue; // aimbot can't land it from here: next tick
+			// First verified connect wins in both modes (no wasted ticks).
+			// Normal holds this pos through the window (loop keeps walking
+			// but holds still once found); Full stops here and swings at
+			// this arrival tick, smack riding the warp after it.
 				bFound = true;
 				pBestEnt = pTarget;
 				iBestLen = t;
-				flBestSimTime = bRec ? pRec->m_flSimTime : pTarget->m_flSimulationTime();
+				flBestSimTime = tCand.m_pRecord ? tCand.m_pRecord->m_flSimTime : pTarget->m_flSimulationTime();
+				vSolvedAngle = tCand.m_vAngleTo;
 				vBestDest = vSim;
-				if (bFull)
-					break;
 			}
 			if (bBlocked)
 				break;
 		}
+		for (auto& [iIndex, tStorage] : mMoveStorage)
+			F::MoveSim.Restore(tStorage); // planning must not leak into live state
 	} // end candidate: later targets run only if none connected yet
-	if (!bFound || iBestLen <= 0)
+	if (!bFound || iBestLen < 0 || !pBestEnt)
 		return; // no hittable tick in the window
-	// Normal warps the whole smack window (fixed instant swing); Full warps
-	// exactly to the first connect. Both honest: walked ticks <= bank.
-	const int iLen = bFull ? iBestLen : iWalked;
+	// Warp length covers travel AND the full smack: the swing executes at
+	// sim tick t_s and resolves at t_s + iSmackTicks, both inside stopped
+	// time. Normal swings on the claim tick (fixed instant swing, full
+	// window); Full swings at its arrival tick (shortest honest warp).
+	// pressAt is the elapsed mapping of t_s (0 = claim tick itself).
+	const int iSwingSim = bFull ? iBestLen : 0;
+	const int iLen = iSwingSim + iSmackTicks;
 	if (iLen <= 0 || iLen > iBank)
 		return;
 
@@ -667,17 +792,21 @@ void CAutoTrickstab::WarpDirect(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 	m_iBonusLeft = 0;
 	m_iWarpEnt = pBestEnt->entindex();
 	m_vWarpDest = vBestDest;
+	m_vWarpAim = vSolvedAngle; // frozen: replay + press resolve with exactly this
 	m_bWarpCharge = bChargeSim;
-	m_iWarpPressAt = std::max(iLen - iSmackTicks, 0); // Normal 0 (up front); Full holds for arrival-minus-smack
+	m_iWarpPressAt = std::max(iSwingSim - 1, 0);
+	// No charge on the claim tick: the swing may own it (Normal), and Full
+	// travels on it. Charge sequences inside stopped time via the replay
+	// schedule below (Early = first smack-in-flight tick, Late = 1 tick
+	// before damage) — never sharing the swing tick engine-side.
 	F::Ticks.m_bWarp = true;
 	F::Ticks.m_iShiftedGoal = F::Ticks.ReleaseGoal(iLen);
 	F::Ticks.m_iShiftStart = F::Ticks.m_iShiftedTicks; // elapsed baseline: Move() rewrites it at drain
 	// Aim now (firing loop has no target pre-warp; keep angles ours) and
-	// stamp the rewind tick the swing resolves against. The press itself
-	// rides the end-of-Run override in the melee aimbot.
-	const Vec3 vAim = Math::CalcAngle(pLocal->GetShootPos(), pBestEnt->m_vecOrigin() + pBestEnt->m_vecViewOffset());
-	pCmd->viewangles.x = vAim.x;
-	pCmd->viewangles.y = vAim.y;
+	// stamp the rewind tick the swing resolves against. Both are the
+	// VERIFIED solution (firing path, from the dest) — never center-mass.
+	// The press itself rides the end-of-Run override in the melee aimbot.
+	pCmd->viewangles = vSolvedAngle;
 	pCmd->tick_count = TIME_TO_TICKS(flBestSimTime + F::Backtrack.GetFakeInterp());
 
 	m_bHasBest = true;
@@ -691,10 +820,9 @@ void CAutoTrickstab::WarpDirect(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 
 bool CAutoTrickstab::WarpPressDue()
 {
-	// Press solver: Normal presses with the claim (pressAt 0, elapsed starts
-	// at 0 from the baseline stamped at claim); Full holds the swing until
-	// arrival-minus-smack of bank consumed, so impact lands exactly on
-	// arrival. True only while our warp owns the latch.
+	// Press solver: elapsed maps to sim ticks with 0 = claim tick itself.
+	// Normal presses on the claim (pressAt 0); Full presses at its arrival
+	// tick (pressAt = arrival - 1). True only while our warp owns the latch.
 	if (!m_bCommitting || !m_bWarpDirect)
 		return false;
 	return (F::Ticks.m_iShiftStart - F::Ticks.m_iShiftedTicks) >= m_iWarpPressAt;
@@ -772,7 +900,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 			s_iCommitEnt = -1;
 			s_vCommitPath.clear();
 			s_bCommitOld = false;
-			F::Ticks.HoldRecharge(13, m_iClaimTick);
+			F::Ticks.HoldRecharge(7, m_iClaimTick);
 		}
 	}
 	if (!pExec && !vCands.empty())
@@ -858,7 +986,7 @@ void CAutoTrickstab::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 			m_iBonusLeft = 3;
 			// Warp executed: blackout recharge until damage/kill confirms
 			// or 13 ticks pass (skipped if damage landed since the claim).
-			F::Ticks.HoldRecharge(13, m_iClaimTick);
+			F::Ticks.HoldRecharge(7, m_iClaimTick);
 		}
 		else if (m_iCommitLeft > 0)
 			m_iCommitLeft--;
