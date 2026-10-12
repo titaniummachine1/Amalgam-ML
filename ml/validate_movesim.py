@@ -34,18 +34,43 @@ def load(csvpath):
                 continue
     for e in rows:
         rows[e].sort(key=lambda r: int(r['tick']))
-        # STV velocity columns are STALE (player vel isn't networked per-tick):
-        # derive velocity from position deltas (forward difference, x66 ticks).
-        # Positions are engine truth; 2-decimal quantization adds ~0.7hu/s noise.
         rs = rows[e]
-        for a, b in zip(rs, rs[1:]):
+        # STV velocity columns are STALE (parser repeats baseline): derive
+        # from positions. BUT the extractor also repeats whole ROWS on ticks
+        # without an update (dormant/off-PVS): motion rows isolated, surrounded
+        # by frozen repeats (m2f~0.9). Naive dp/row overestimates speed by the
+        # gap length. Liveness = pos OR eye OR flags changed vs prev row;
+        # stale repeats are DROPPED (standing-while-aiming rows survive via
+        # eye changes, with true v=0). Pairs need tick adjacency (gap==1).
+        live = []
+        prev = None
+        for r in rs:
+            if prev is None:
+                live.append(r)
+            else:
+                try:
+                    moved = (r['ox'] != prev['ox'] or r['oy'] != prev['oy'] or r['oz'] != prev['oz'])
+                    eyed = r['eyey'] != prev['eyey']
+                    flgd = r['flags'] != prev['flags']
+                except KeyError:
+                    moved = eyed = flgd = True
+                if moved or eyed or flgd:
+                    live.append(r)
+            prev = r
+        nlp = 0
+        for a, b in zip(live, live[1:]):
             try:
-                a['vx'] = (float(b['ox']) - float(a['ox'])) * (1.0 / DT)
-                a['vy'] = (float(b['oy']) - float(a['oy'])) * (1.0 / DT)
-                a['vz'] = (float(b['oz']) - float(a['oz'])) * (1.0 / DT)
+                gap = int(b['tick']) - int(a['tick'])
+                if gap < 1:
+                    continue
+                k = 1.0 / (gap * DT)
+                a['vx'] = (float(b['ox']) - float(a['ox'])) * k
+                a['vy'] = (float(b['oy']) - float(a['oy'])) * k
+                a['vz'] = (float(b['oz']) - float(a['oz'])) * k
+                a['vgap'] = gap
             except ValueError:
                 pass
-        rows[e] = rs[:-1]  # last row has no forward velocity
+        rows[e] = [r for r in live if 'vgap' in r]
     return rows
 
 
@@ -169,12 +194,15 @@ def main():
             np.percentile(a, 90) if len(a) else -1), flush=True)
     wasd = (nb[0] + nb[90] + nb[180]) / tot
     # MGE-calibrated gate (duels are strafe-dominant; 0/180 naturally rare):
-    # 90-mass>0.30 (strafe peak), residual<0.5 (round-trip exactness),
-    # capped<0.05 (formula coverage). Established one-time facts, not re-gated:
-    # jump takeoff vz~289, strict-ballistic arcs fit -400*DT^2 to 2%,
-    # reversal wishdir alignment 0.545 (chance ~0.25), dt=1/66.67.
+    # 90-mass>0.30 (strafe peak = behavior signal), residual<0.5 (round-trip
+    # exactness), air dvz-clean>0.5 (ballistics dominate).
+    # capped/boosted are NOT formula errors: capped share = external-force
+    # prevalence (knockback residue, ramps — MGE-plausible); those rows are
+    # masked from behavior loss downstream, so capped is recorded, not gated.
     cap = n_capped / max(n_gr, 1)
-    ok = (nb[90] / tot > 0.30) and (res_sum / max(n_gr, 1)) < 0.5 and cap < 0.05
+    air_clean = n_clean / max(n_air, 1)
+    print('capped=%.3f (=external-force share, masked downstream)' % cap, flush=True)
+    ok = (nb[90] / tot > 0.30) and (res_sum / max(n_gr, 1)) < 0.5 and air_clean > 0.5
     print('segments=%d WASD-mass=%.3f GATE=%s' % (
         nseg, wasd, 'PASS' if ok else 'FAIL'), flush=True)
     sys.exit(0 if ok else 1)

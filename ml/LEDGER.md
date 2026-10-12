@@ -38,5 +38,6 @@
 
 ## Known data facts (do not rediscover)
 - STV vel/eye/maxspeed columns FREEZE (parser/extractor artifact); velocity is networked (SDK NETVAR) but STV snapshots don't update it. DERIVE velocity from positions (×66.667). Flags mostly live; row-1 transients suspect.
-- Teleport cut is 80hu, NOT 300 (182hu spawn snaps leak through 300). Pipeline builders still use 300 — tighten on next dataset build.
+- Extractor repeats whole ROWS on ticks without updates (m2f~0.9 for duelists; ent 6 fully frozen). Naive dp/row overestimates speed by gap length (580hu/s phantoms, capped-everything). Liveness = pos OR eye OR flags changed; stale repeats DROPPED; v = dp/(gap*DT); pairs need gap==1. Standing-while-aiming survives via eye (true v=0). Single source: `movesim.load_csv_live` (validate/souptrace/dataset all use it — never reimplement).
+- Teleport cut is 80hu, NOT 300 (182hu spawn snaps leak through 300). Pipeline builders still use 300hu — tighten on next dataset build.
 - DT = 0.015 (66.67Hz), gravity 800, jump 289, accel/air 10, friction 4, stop 100, aircap 30.

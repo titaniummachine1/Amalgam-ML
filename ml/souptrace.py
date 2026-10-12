@@ -45,22 +45,13 @@ def main():
     soup, _, doors = load_soup(sys.argv[1])
     max_checks = int(sys.argv[3]) if len(sys.argv) > 3 else 3000
     print('soup tris=%d' % len(soup), flush=True)
-    rows = defaultdict(list)
-    with open(sys.argv[2], newline='') as fh:
-        for r in csv.DictReader(fh):
-            try:
-                if int(float(r['class'])) in range(1, 10):
-                    rows[int(r['ent'])].append(r)
-            except ValueError:
-                continue
-    for e in rows:
-        rows[e].sort(key=lambda r: int(r['tick']))
-        rs = rows[e]
-        for a, b in zip(rs, rs[1:]):
-            a['vx'] = (float(b['ox']) - float(a['ox'])) / 0.015
-            a['vy'] = (float(b['oy']) - float(a['oy'])) / 0.015
-            a['vz'] = (float(b['oz']) - float(a['oz'])) / 0.015
-        rows[e] = rs[:-1]
+    from movesim import load_csv_live
+    rows = load_csv_live(sys.argv[2], classes=set(range(1, 10)))
+    tickpos = defaultdict(dict)  # tick -> ent -> pos (body-block forensics)
+    for e2, rs2 in rows.items():
+        for r2 in rs2:
+            tickpos[int(r2['tick'])][e2] = np.array(
+                [float(r2['ox']), float(r2['oy']), float(r2['oz'])])
     stops = []
     dup = tot = 0
     for e, rs in rows.items():
@@ -96,7 +87,7 @@ def main():
                 spre = float(np.hypot(pprev['v'][0], pprev['v'][1])) if pprev and pprev['t'] == prev['t'] - 1 else 0.0
                 if prev['gr'] and gr and s0 > 150 and s1 < 40 and spre > 100:
                     if len(doors) == 0 or float(np.min(((doors - prev['p']) ** 2).sum(axis=1)) ** 0.5) > 150:
-                        stops.append((prev['p'], prev['v'][:2] / (s0 + 1e-12), s0))
+                        stops.append((t, e, prev['p'], prev['v'][:2] / (s0 + 1e-12), s0))
                         if len(stops) >= max_checks:
                             break
             if prev and t == prev['t'] + 1:
@@ -106,24 +97,65 @@ def main():
         if len(stops) >= max_checks:
             break
     print('wall-stop candidates=%d dup-row-frac=%.3f' % (len(stops), dup / max(tot, 1)), flush=True)
+    # Post-filter: stop must PERSIST 2 ticks (kills single-row parser glitches
+    # and dup artifacts) and the entity must be LIVE (eye moves within +-3
+    # ticks; dormant freezes repeat eye verbatim). True wall-pins satisfy both.
+    import bisect
+    tickidx = {}
+    for e2, rs2 in rows.items():
+        tickidx[e2] = [int(r['tick']) for r in rs2]
+    kept = []
+    neye = 0
+    for (st, se, p, d2, s0) in stops:
+        rsx = rows[se]
+        tx = tickidx[se]
+        i = bisect.bisect_left(tx, st + 1)
+        if i >= len(rsx) or tx[i] != st + 1:
+            continue
+        r1 = rsx[i]
+        try:
+            s_next = float(np.hypot(float(r1['vx']), float(r1['vy'])))
+        except ValueError:
+            continue
+        if s_next >= 60:
+            continue
+        lo = bisect.bisect_left(tx, st - 3)
+        eyes = []
+        for r2 in rsx[lo:i + 4]:
+            try:
+                eyes.append(float(r2['eyey']))
+            except ValueError:
+                pass
+        if not eyes or max(eyes) - min(eyes) <= 0.5:
+            neye += 1
+            continue
+        kept.append((st, se, p, d2, s0))
+    print('persistent-live stops=%d/%d (eye-dead-skipped=%d)' % (len(kept), len(stops), neye), flush=True)
+    stops = kept
     if not stops:
         print('GATE=FAIL (no stops found)');
         sys.exit(1)
     hits = 0
     miss = []
-    for i, (p, d2, s0) in enumerate(stops):
+    nnear = 0
+    for i, (st, se, p, d2, s0) in enumerate(stops):
         o = np.array([p[0], p[1], p[2] + 30.0])  # chest height
         dd = np.array([d2[0], d2[1], 0.0])
-        t = ray_hit(o, dd, soup, s0 * 0.015 * 2 + 60.0)
-        if t < np.inf:
+        th = ray_hit(o, dd, soup, s0 * 0.015 * 2 + 60.0)
+        if th < np.inf:
             hits += 1
-        elif len(miss) < 8:
-            miss.append((p, d2))
+        else:
+            others = [q for f, q in tickpos.get(st, {}).items() if f != se]
+            dmin = min([float(np.linalg.norm(q - p)) for q in others] or [1e9])
+            if dmin < 100.0:
+                nnear += 1  # body-block suspect: another player within 100hu
+            elif len(miss) < 8:
+                miss.append((p, d2))
         if (i + 1) % 500 == 0:
             print('  %d/%d hits=%d' % (i + 1, len(stops), hits), flush=True)
     agr = hits / len(stops)
-    print('agreement=%.3f (%d/%d) GATE=%s' % (
-        agr, hits, len(stops), 'PASS' if agr > 0.90 else 'FAIL'), flush=True)
+    print('agreement=%.3f (%d/%d) body-near-miss=%d GATE=%s' % (
+        agr, hits, len(stops), nnear, 'PASS' if agr > 0.90 else 'FAIL'), flush=True)
     for p, d in miss:
         print('  miss at (%.0f, %.0f, %.0f) dir (%.2f, %.2f)' % (p[0], p[1], p[2], d[0], d[1]), flush=True)
     sys.exit(0 if agr > 0.90 else 1)

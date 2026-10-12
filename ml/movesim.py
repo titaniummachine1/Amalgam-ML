@@ -42,6 +42,62 @@ FL_ONGROUND = 1
 FL_DUCKING = 2
 
 
+def load_csv_live(csvpath, classes=None):
+    """Load a demo CSV with gap-aware derived velocity (single source of
+    truth for validate/souptrace/dataset builders — never reimplement).
+    - STV vel columns are STALE: derive from positions.
+    - Extractor repeats rows on ticks without updates (m2f~0.9): liveness =
+      pos OR eye OR flags changed vs prev row; stale repeats DROPPED
+      (standing-while-aiming survives via eye, v=0 true).
+    - v = dp/(gap*DT) with gap = ticks since last live row; pairs need gap==1
+      (adjacency) — enforced by callers via r['vgap'].
+    Returns {ent: [rows]} with vx/vy/vz/vgap set. Rows: tick,ent,class,ox..vz,
+    eyep,eyey,mspd,flags,health,life,team,fresh + vx,vy,vz,vgap.
+    """
+    import csv as _csv
+    from collections import defaultdict as _dd
+    rows = _dd(list)
+    with open(csvpath, newline='') as fh:
+        for r in _csv.DictReader(fh):
+            try:
+                if classes is None or int(float(r['class'])) in classes:
+                    rows[int(r['ent'])].append(r)
+            except ValueError:
+                continue
+    for e in rows:
+        rows[e].sort(key=lambda r: int(r['tick']))
+        rs = rows[e]
+        live = []
+        prev = None
+        for r in rs:
+            if prev is None:
+                live.append(r)
+            else:
+                try:
+                    changed = (r['ox'] != prev['ox'] or r['oy'] != prev['oy'] or
+                               r['oz'] != prev['oz'] or r['eyey'] != prev['eyey'] or
+                               r['flags'] != prev['flags'])
+                except KeyError:
+                    changed = True
+                if changed:
+                    live.append(r)
+            prev = r
+        for a, b in zip(live, live[1:]):
+            try:
+                gap = int(b['tick']) - int(a['tick'])
+                if gap < 1:
+                    continue
+                k = 1.0 / (gap * DT)
+                a['vx'] = (float(b['ox']) - float(a['ox'])) * k
+                a['vy'] = (float(b['oy']) - float(a['oy'])) * k
+                a['vz'] = (float(b['oz']) - float(a['oz'])) * k
+                a['vgap'] = gap
+            except ValueError:
+                pass
+        rows[e] = [r for r in live if 'vgap' in r]
+    return rows
+
+
 def friction(v, sf=SF):
     """Base Friction (gamemovement.cpp:1612). Scales full vector."""
     v = np.asarray(v, dtype=float).copy()
