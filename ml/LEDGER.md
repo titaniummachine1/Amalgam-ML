@@ -23,7 +23,7 @@
 | `ml/train_both27.py` | GRU-27 trainer (ep7: 132-horizon, blame, adaptive, jumpmask) | running; best eval 382.16 |
 | `ml/hit_eval_both.py` | verdict vs champion | beats = ship |
 | `ml/mapsoup.py` | BSP→collision soup (srctools, engine-exact contents) | beta4b: 141008 tris, 34 brushes excluded, doors tracked |
-| `ml/rollout_gate.py` | THE agreement gate: recovered-input rollouts vs truth (also the dataset engine) | PASS 2026-10-12: 230 segs, med 2.4/3.9/5.8/7.7 @7/13/20/33, beats frozen everywhere |
+| `ml/build_rollout.py` | counterfactual dataset: 33+20 windows, ego-frame 25-tokenizer, masks, rollout errors | YIELD 2026-10-12: 1114/CSV (stride 3) -> ~140k rows over 125 demos; masks 24/6/40/30; rollout med 0.6-8.8hu |
 | `ml/dbg7.py` | miss forensics (current) | in progress |
 | `ml/rollout_gate.py` | THE agreement gate: recovered-input rollouts vs truth (dataset engine) | PASS 230 seg: 2.4/3.9/5.8/7.7hu @7/13/20/33, beats frozen 3-8x |
 | `ml/build_jumpmask.py`, `ml/build_w7.py` | jump mask, weapon cache (ep7 inputs) | built |

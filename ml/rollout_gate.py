@@ -17,8 +17,8 @@ import numpy as np
 
 sys.path.insert(0, __import__('os').path.dirname(__file__))
 from movesim import (AIRCAP, CLASS_SPEED, DUCK_FRAC, FL_DUCKING, FL_ONGROUND,
-                     ground_step, inverse_ground, load_csv_live, rollout_free,
-                     yaw_to_fwd)
+                     ground_step, inverse_air, inverse_ground, load_csv_live,
+                     rollout_free, yaw_to_fwd)
 from souptrace import load_soup, ray_hit
 
 HOR = [7, 13, 20, 33]
@@ -49,9 +49,8 @@ def main():
             if any(int(f(r['class'])) != int(f(seg[0]['class'])) for r in seg):
                 i += 1
                 continue
-            if any(not (int(f(r['flags'])) & FL_ONGROUND) for r in seg):
-                i += 1
-                continue
+            # mixed ground/air allowed: inverse + rollout handle per-tick
+            # physics (air ballistics are clean); flight tests the air path.
             if any(f(r['mspd']) <= 1 for r in seg):
                 i += 1
                 continue
@@ -82,13 +81,20 @@ def main():
                 nwall += 1
                 i += 40
                 continue
-            # recover inputs per step (demo-derived = sane) + views
+            # recover inputs per step (demo-derived = sane) + views; per-tick
+            # grounded (air steps use air inverse + air physics, not ground)
             inp = []
             views = []
+            grf = []
             ok = True
             for k in range(40):
                 ms = ms0
-                inv = inverse_ground(V[k], V[k + 1], ms)
+                grk = bool(int(f(seg[k]['flags'])) & FL_ONGROUND)
+                grf.append(grk)
+                if grk:
+                    inv = inverse_ground(V[k], V[k + 1], ms)
+                else:
+                    inv = inverse_air(V[k], V[k + 1])
                 wd = inv['wishdir']
                 inp.append((wd if wd is not None else None,
                             inv['wishspeed'] if wd is not None else 0.0))
@@ -96,10 +102,9 @@ def main():
                     views.append(yaw_to_fwd(f(seg[k]['eyey'])))
                 except ValueError:
                     views.append(None)
-            grs = [True] * 40
-            pr = rollout_free(V[0], P[0], 40, inp, grs, ms0, AIRCAP, views)
+            pr = rollout_free(V[0], P[0], 40, inp, grf, ms0, AIRCAP, views)
             f0 = inp[0]
-            pf = rollout_free(V[0], P[0], 40, [f0] * 40, grs, ms0, AIRCAP, views)
+            pf = rollout_free(V[0], P[0], 40, [f0] * 40, grf, ms0, AIRCAP, views)
             for h in HOR:
                 rec[h].append(float(np.linalg.norm(pr[h - 1] - P[h])))
                 frz[h].append(float(np.linalg.norm(pf[h - 1] - P[h])))
