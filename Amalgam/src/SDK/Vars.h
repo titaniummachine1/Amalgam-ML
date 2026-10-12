@@ -713,8 +713,6 @@ NAMESPACE_BEGIN(Vars)
 			CVar(NoPush, "No push", false);
 			CVar(MovementLock, "Movement lock", false);
 			CVar(MoveLog, "Movement logger", false);
-			CVar(DemoLoop, "Demo loop", false);
-			CVar(DemoLoopScale, "Demo loop speed", 4.f, SLIDER_CLAMP | SLIDER_PRECISION, 1.f, 8.f, 1.f, "%gx");
 			CVar(AutoJump, "Auto jump", false);
 			CVar(AirDuck, "Air duck", true);
 

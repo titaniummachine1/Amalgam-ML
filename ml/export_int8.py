@@ -30,6 +30,16 @@ def qparam(p):
     return q.numpy(), np.float32(s)
 
 
+def qparam_row(p):
+    # per-OUTPUT-row scales: one outlier row no longer crushes the other 287
+    # (both27's fresh weapon cols hit max 5.29 vs bulk ~0.3; per-tensor gave
+    # 1.77 forward err = garbage, per-row recovers exactness).
+    s = p.abs().amax(dim=1).numpy() / 127.0
+    s = np.maximum(s, 1e-12).astype(np.float32)
+    q = np.round(p.numpy() / s[:, None]).clip(-128, 127).astype(np.int8)
+    return q, s
+
+
 def main():
     src, dst = sys.argv[1], sys.argv[2]
     sd = torch.load(os.path.join(D, src) if not os.path.isabs(src) else src,
@@ -42,7 +52,12 @@ def main():
     Nin = sd['gru.weight_ih_l0'].shape[1]
     blobs = {}
     for n in names:
-        q, s = qparam(sd[n].float())
+        # 2D tensors (all GRU matrices + head): per-row scales. 1D biases:
+        # per-tensor (tight distributions, no outlier rows).
+        if sd[n].dim() == 2:
+            q, s = qparam_row(sd[n].float())
+        else:
+            q, s = qparam(sd[n].float())
         blobs[n] = (q, s)
     # verify: dequant reload matches forward on random input
     ref = Net(Nin, H)
@@ -51,7 +66,10 @@ def main():
     dsd = {}
     for n in names:
         q, s = blobs[n]
-        dsd[n] = torch.from_numpy(q.astype(np.float32)) * s
+        if isinstance(s, np.ndarray):
+            dsd[n] = torch.from_numpy(q.astype(np.float32)) * torch.from_numpy(s)[:, None]
+        else:
+            dsd[n] = torch.from_numpy(q.astype(np.float32)) * s
     tst.load_state_dict(dsd)
     ref.eval()
     tst.eval()
@@ -69,7 +87,11 @@ def main():
     for n in names:
         q, s = blobs[n]
         var = n.replace('.', '_')
-        L.append(f'constexpr float kScale_{var} = {float(s)!r}f;')
+        if isinstance(s, np.ndarray):
+            L.append(f'constexpr float kScale_{var}[{s.size}] = {{' +
+                     ','.join(f'{float(v)!r}f' for v in s) + '};')
+        else:
+            L.append(f'constexpr float kScale_{var} = {float(s)!r}f;')
         flat = q.flatten()
         L.append(f'const int8_t kW_{var}[{flat.size}] = {{' +
                  ','.join(str(int(v)) for v in flat) + '};')

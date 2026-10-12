@@ -929,7 +929,6 @@
     <ClCompile Include="src\Features\ImGui\Render.cpp" />
     <ClCompile Include="src\Features\ImGui\Menu\Menu.cpp" />
     <ClCompile Include="src\Features\Misc\AutoVote\AutoVote.cpp" />
-    <ClCompile Include="src\Features\Misc\DemoLoop\DemoLoop.cpp" />
     <ClCompile Include="src\Features\Misc\Misc.cpp" />
     <ClCompile Include="src\Features\Misc\MoveLog\MoveLog.cpp" />
     <ClCompile Include="src\Features\Misc\SmartJump\SmartJump.cpp" />
@@ -1248,7 +1247,6 @@
     <ClInclude Include="src\Features\ImGui\Fonts\Roboto\RobotoBlack.h" />
     <ClInclude Include="src\Features\ImGui\Fonts\Roboto\RobotoMedium.h" />
     <ClInclude Include="src\Features\Misc\AutoVote\AutoVote.h" />
-    <ClInclude Include="src\Features\Misc\DemoLoop\DemoLoop.h" />
     <ClInclude Include="src\Features\Misc\Misc.h" />
     <ClInclude Include="src\Features\Misc\MoveLog\MoveLog.h" />
     <ClInclude Include="src\Features\Misc\SmartJump\SmartJump.h" />

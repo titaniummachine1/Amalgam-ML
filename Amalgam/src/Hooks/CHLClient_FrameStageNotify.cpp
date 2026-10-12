@@ -3,7 +3,6 @@
 #include "../Features/Aimbot/Aimbot.h"
 #include "../Features/Backtrack/Backtrack.h"
 #include "../Features/Binds/Binds.h"
-#include "../Features/Misc/DemoLoop/DemoLoop.h"
 #include "../Features/CheatDetection/CheatDetection.h"
 #include "../Features/CritHack/CritHack.h"
 #include "../Features/Players/PlayerUtils.h"
@@ -45,7 +44,6 @@ MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 		F::MoveSim.Store();
 		F::CritHack.Store();
 		F::Aimbot.Store();
-		F::DemoLoop.FrameStageNotify();
 
 		auto pLocal = H::Entities.GetLocal();
 		F::Groups.Store(pLocal);
