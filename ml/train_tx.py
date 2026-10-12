@@ -137,4 +137,5 @@ def main():
     print('best=%.4f saved %s' % (best, out), flush=True)
 
 
-main()
+if __name__ == '__main__':
+    main()
