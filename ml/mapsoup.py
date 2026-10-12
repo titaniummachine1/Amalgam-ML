@@ -216,17 +216,27 @@ def main():
     print('brushes=%d solid=%d ladder=%d other=%d tris=%d (%.1fs)' % (
         n_brush, n_solid, n_ladder, n_other, len(tris), time.time() - t0), flush=True)
 
-    # --- static props: counted by solidity (meshes deferred, logged gap) ----
+    # --- static props: positions of solid ones (meshes deferred) -------------
     from collections import Counter
+    prop_pts = []
     try:
         sol = Counter()
         nprop = 0
         for p in bsp.props:
             nprop += 1
             sol[p.solidity] += 1
-        print('static_props=%d solidity=%s (meshes deferred)' % (nprop, dict(sol)), flush=True)
+            if p.solidity:
+                try:
+                    o = p.origin
+                    prop_pts.append((float(o.x), float(o.y), float(o.z)))
+                except Exception:
+                    pass
+        print('static_props=%d solidity=%s solid-pts=%d (meshes deferred)' % (
+            nprop, dict(sol), len(prop_pts)), flush=True)
     except Exception as ex:
         print('static_props ERR', type(ex).__name__, str(ex)[:120], flush=True)
+    prop_arr = np.array(prop_pts, dtype=np.float32).reshape(-1, 3) if prop_pts \
+        else np.zeros((0, 3), dtype=np.float32)
 
     if out:
         # Uncompressed + atomic rename: compressed zip writes stall under CPU
@@ -236,7 +246,7 @@ def main():
             if door_pts else np.zeros((0, 3), dtype=np.float32)
         print('door_pts=%d' % len(doors), flush=True)
         tmp = out + '.tmp.npz'  # savez appends .npz when missing
-        np.savez(tmp, tris=tris, contents=cont, doors=doors,
+        np.savez(tmp, tris=tris, contents=cont, doors=doors, props=prop_arr,
                  meta=np.array(['brushes=%d solid=%d tris=%d' % (n_brush, n_solid, len(tris))]))
         with np.load(tmp) as chk:  # closed handle: Windows replace needs it
             assert chk['tris'].shape[0] == len(tris), 'verify failed'
