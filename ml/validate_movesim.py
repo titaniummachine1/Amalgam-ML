@@ -92,7 +92,9 @@ def main():
                    'ey': f(r['eyey']), 'life': r.get('life'), 'hp': r.get('health')}
             if prev is not None:
                 gap = t != prev['t'] + 1
-                tele = float(np.linalg.norm(p - prev['p'])) > 300
+                # 80hu teleport cut (not 300): legit max ~60hu/tick; spawn
+                # teleports as small as 182hu fabricate -9000hu/s "velocities".
+                tele = float(np.linalg.norm(p - prev['p'])) > 80
                 swap = cls != prev['cls'] or cur['life'] != prev['life']
                 npc = cls not in CLASS_SPEED  # static/world/bot rows carry no input info
                 if not gap and not tele and not swap and not npc and pairs < max_pairs:
