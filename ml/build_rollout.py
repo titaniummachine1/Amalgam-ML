@@ -26,7 +26,7 @@ sys.path.insert(0, __import__('os').path.dirname(__file__))
 from movesim import (AIRCAP, CLASS_SPEED, DUCK_FRAC, FL_DUCKING, FL_ONGROUND,
                      inverse_air, inverse_ground, load_csv_live, rollout_free,
                      yaw_to_fwd)
-from souptrace import load_soup, ray_hit
+from souptrace import load_soup, ray_hit, build_grid, grid_hit
 
 HIST = 33
 FUT = 20
@@ -56,6 +56,8 @@ def main():
     stride = int(sys.argv[4]) if len(sys.argv) > 4 else 10
     rows = load_csv_live(csvpath, classes=set(range(1, 10)))
     soup, _, _ = load_soup(souppath)
+    grid = build_grid(soup)
+    print('grid cells=%d' % len(grid[2]), flush=True)
     X, TOK, JMP, POS, ERR, MSK, META = [], [], [], [], [], [], []
     nwin = nwall = ntele = 0
     mhist = [0, 0, 0, 0]
@@ -90,7 +92,7 @@ def main():
                 dd = np.array([V[0][0] / sp0, V[0][1] / sp0, 0.0])
                 o = np.array([P[0][0], P[0][1], P[0][2] + 30.0])
                 plen = float(np.sum(np.linalg.norm(P[1:HIST + 1] - P[:HIST], axis=1)))
-                if ray_hit(o, dd, soup, plen + 100.0) < np.inf:
+                if grid_hit(o, dd, soup, plen + 100.0, grid) < np.inf:
                     nwall += 1
                     i += HIST
                     continue
