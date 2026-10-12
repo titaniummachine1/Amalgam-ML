@@ -59,7 +59,7 @@ def main():
     grid = build_grid(soup)
     print('grid cells=%d' % len(grid[2]), flush=True)
     X, TOK, JMP, POS, ERR, MSK, META = [], [], [], [], [], [], []
-    nwin = nwall = ntele = 0
+    nwin = nwall = ntele = neye = 0
     mhist = [0, 0, 0, 0]
     thist = [0] * 25
     for e, rs in rows.items():
@@ -86,6 +86,19 @@ def main():
             cls = int(f(win[0]['class']))
             ms0 = f(win[0]['mspd']) or CLASS_SPEED.get(cls, 300.0)
             p0 = P[0]
+            # eye-liveness gate (Catastrophe #2/#4 sequel): moving fast with
+            # frozen eye = stale eye = poisoned ego bins. Slow windows keep
+            # (eye irrelevant when still). Stale = <=2 unique eye values.
+            try:
+                eyen = len(set(r['eyey'] for r in win))
+            except KeyError:
+                eyen = 99
+            if eyen <= 2:
+                vbar = float(np.mean(np.linalg.norm(V[:HIST + 1, :2], axis=1)))
+                if vbar > 100:
+                    neye += 1
+                    i += 1
+                    continue
             # wall ahead? (open-only v1)
             sp0 = float(np.hypot(V[0][0], V[0][1]))
             if sp0 >= 50:
@@ -185,7 +198,7 @@ def main():
                 thist[t] += 1
             nwin += 1
             i += stride
-    print('windows=%d tele-dropped=%d wall-excluded=%d' % (nwin, ntele, nwall), flush=True)
+    print('windows=%d tele-dropped=%d wall-excluded=%d eye-dropped=%d' % (nwin, ntele, nwall, neye), flush=True)
     if nwin:
         Mt = sum(mhist)
         print('mask clean/capped/flight/blast: %s' % (
