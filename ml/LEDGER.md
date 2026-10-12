@@ -40,6 +40,8 @@
 
 ## PENDING
 - both27 ship (quant gate ≤0.5pp, C++ 27-dim swap, rebuild, push) after ep7 verdict.
+  ep7 PAUSED 2026-10-12 for corpus build (CPU contention; checkpoints safe, resume anytime).
+- Orange v34 (21 demos): BLOCKED on BSP (not on disk anywhere). beta4b corpus first; orange joins when BSP lands.
 - Rollout dataset (dual rollouts, innovation + λ-blame, 80hu teleport cut!) → tiny early-exit AR transformer → geometry-probe inputs (later experiment).
 
 ## Known data facts (do not rediscover)

@@ -63,11 +63,27 @@ class TinyAR(nn.Module):
 
 
 def main():
-    npz = sys.argv[1]
+    src = sys.argv[1]
     epochs = int(sys.argv[2]) if len(sys.argv) > 2 else 30
     out = sys.argv[3] if len(sys.argv) > 3 else 'tx_tiny.pt'
-    d = np.load(npz, allow_pickle=True)
-    X, TOK, JMP, MSK, ERR = d['X'], d['TOK'], d['JMP'], d['MSK'], d['ERR']
+    # src = one npz OR a .txt list of npz files (corpus training: concat).
+    if src.endswith('.txt'):
+        with open(src) as fh:
+            files = [l.strip() for l in fh if l.strip()]
+    else:
+        files = [src]
+    Xs, Ts, Js, Ms, Es = [], [], [], [], []
+    for fp in files:
+        d = np.load(fp, allow_pickle=True)
+        if len(d['X']) == 0:
+            continue
+        Xs.append(d['X'])
+        Ts.append(d['TOK'])
+        Js.append(d['JMP'])
+        Ms.append(d['MSK'])
+        Es.append(d['ERR'])
+    X, TOK, JMP, MSK, ERR = (np.concatenate(a) for a in (Xs, Ts, Js, Ms, Es))
+    print('files=%d' % len(files), flush=True)
     N = len(X)
     idx = np.arange(N)
     rng = np.random.RandomState(7)
