@@ -261,9 +261,11 @@ def inverse_air(v0, v1, cap=AIRCAP, sf=SF):
     return {'wishdir': wd, 'wishspeed': max(ws, cur + n), 'info': info}
 
 
-def rollout_free(v0, p0, steps, inputs, grounded, maxspeed, cap=AIRCAP):
+def rollout_free(v0, p0, steps, inputs, grounded, maxspeed, cap=AIRCAP, view_fwds=None):
     """Free-space rollout (no collision): inputs = list of (wishdir2|None,
-    wishspeed) per step; grounded = list of bool. Returns positions array."""
+    wishspeed) per step; grounded = list of bool. view_fwds = optional list
+    of 2D unit view-forward per step (enables the live back-speed clamp).
+    Returns positions array."""
     v = np.asarray(v0, dtype=float).copy()
     p = np.asarray(p0, dtype=float).copy()
     out = []
@@ -277,6 +279,8 @@ def rollout_free(v0, p0, steps, inputs, grounded, maxspeed, cap=AIRCAP):
                 v, stopped = ground_step(v, wd, min(ws, maxspeed), maxspeed)
                 if stopped:
                     v = np.zeros(3)
+            if view_fwds is not None and view_fwds[k] is not None:
+                v = back_clamp(v, view_fwds[k], maxspeed)
             p = p + v * DT
         else:
             v[2] -= GRAVITY * 0.5 * DT  # StartGravity half

@@ -81,7 +81,8 @@ def main():
             # - sustained pre-speed (snap-then-frozen artifacts)
             # - 150hu door exclusion (doors excluded from soup; may be closed)
             if prev and t == prev['t'] + 1 and np.linalg.norm(p - prev['p']) <= 80 \
-                    and t - last_snap > 66 and t - t0ent > 100 and ms > 1:
+                    and t - last_snap > 66 and t - t0ent > 100 and ms > 1 \
+                    and r.get('vgap') == 1 and prev.get('vgap') == 1:
                 s0 = float(np.hypot(prev['v'][0], prev['v'][1]))
                 s1 = float(np.hypot(v[0], v[1]))
                 spre = float(np.hypot(pprev['v'][0], pprev['v'][1])) if pprev and pprev['t'] == prev['t'] - 1 else 0.0
@@ -93,7 +94,7 @@ def main():
             if prev and t == prev['t'] + 1:
                 last_life = life
             pprev = prev
-            prev = {'t': t, 'p': p, 'v': v, 'gr': gr}
+            prev = {'t': t, 'p': p, 'v': v, 'gr': gr, 'vgap': r.get('vgap')}
         if len(stops) >= max_checks:
             break
     print('wall-stop candidates=%d dup-row-frac=%.3f' % (len(stops), dup / max(tot, 1)), flush=True)

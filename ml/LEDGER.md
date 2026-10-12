@@ -2,6 +2,11 @@
 
 ## Rules (never violate)
 - Training targets are OBSERVED TRUTH only. No self-training loops (no drift).
+- Sim-truth disagreement doctrine: same inputs through the sim MUST reproduce
+  truth (rollout_gate enforces: 2.4hu @7, 7.7hu @33). Any excess deviation is a
+  SIM bug or DATA bug — fix the sim/data, never tune the model to compensate.
+  (STV stores no inputs; inverse dynamics recovers them. Capped-regime rows
+  carry lower-bound inputs — masked/downweighted, never trusted exactly.)
 - Unpredictable ticks (jump/blast/teleport/knockback) get ZERO loss weight, kept as context. Never reward, never penalty.
 - Poison rule: tick sequences must be consecutive; gaps quarantined, never ingested.
 - NO bot data for training. NO PR anywhere without measured proof.
@@ -18,8 +23,9 @@
 | `ml/train_both27.py` | GRU-27 trainer (ep7: 132-horizon, blame, adaptive, jumpmask) | running; best eval 382.16 |
 | `ml/hit_eval_both.py` | verdict vs champion | beats = ship |
 | `ml/mapsoup.py` | BSP→collision soup (srctools, engine-exact contents) | beta4b: 141008 tris, 34 brushes excluded, doors tracked |
-| `ml/souptrace.py` | wall-stop agreement gate | FAIL under diagnosis (detector artifacts found: respawn snaps) |
+| `ml/rollout_gate.py` | THE agreement gate: recovered-input rollouts vs truth (also the dataset engine) | PASS 2026-10-12: 230 segs, med 2.4/3.9/5.8/7.7 @7/13/20/33, beats frozen everywhere |
 | `ml/dbg7.py` | miss forensics (current) | in progress |
+| `ml/rollout_gate.py` | THE agreement gate: recovered-input rollouts vs truth (dataset engine) | PASS 230 seg: 2.4/3.9/5.8/7.7hu @7/13/20/33, beats frozen 3-8x |
 | `ml/build_jumpmask.py`, `ml/build_w7.py` | jump mask, weapon cache (ep7 inputs) | built |
 | `C:/gitProjects/tf2-movesim/` | separate Rust workspace (formulas+CLI, unsupervised-safe) | 6/6 tests, parity harness |
 
