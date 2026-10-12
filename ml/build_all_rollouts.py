@@ -29,7 +29,7 @@ def main():
         if __import__('os').path.exists(out) and __import__('os').path.getsize(out) > 10000:
             try:
                 d = np.load(out, allow_pickle=True)
-                ok = len(d['X']) > 0
+                ok = 'X' in d.files  # loads = done (duds save empty rows)
             except Exception:
                 ok = False
         if not ok:

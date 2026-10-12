@@ -192,10 +192,23 @@ def main():
         print('tok none=%.2f moving=%d classes' % (thist[0] / Tt, sum(1 for t in thist[1:] if t)), flush=True)
         E = np.array(ERR)
         print('rollout-err med @%s: %s' % (ERR_HOR, np.median(E, axis=0).round(1).tolist()), flush=True)
-        np.savez(outpath if outpath.endswith('.npz') else outpath + '.npz',
-                 X=np.array(X), TOK=np.array(TOK), JMP=np.array(JMP), POS=np.array(POS),
-                 ERR=E, MSK=np.array(MSK), META=np.array(META, dtype=np.int64))
-        print('saved', outpath, flush=True)
+        Xa, Ta, Ja, Pa, Ea, Ma, Me = (np.array(X), np.array(TOK), np.array(JMP),
+                                      np.array(POS), E, np.array(MSK),
+                                      np.array(META, dtype=np.int64))
+    else:
+        # dud demo (idle/empty): save EMPTY arrays with correct shapes so the
+        # driver resume-check (len>0 required) keeps retrying rarely, and the
+        # train list builder can filter by size. Exit 0 (not an error).
+        Xa = np.zeros((0, HIST, FEATS), dtype=np.float32)
+        Ta = np.zeros((0, FUT), dtype=np.int64)
+        Ja = np.zeros((0, FUT), dtype=np.int64)
+        Pa = np.zeros((0, FUT, 3), dtype=np.float32)
+        Ea = np.zeros((0, len(ERR_HOR)), dtype=np.float32)
+        Ma = np.zeros((0, FUT), dtype=np.int64)
+        Me = np.zeros((0, 2), dtype=np.int64)
+    np.savez(outpath if outpath.endswith('.npz') else outpath + '.npz',
+             X=Xa, TOK=Ta, JMP=Ja, POS=Pa, ERR=Ea, MSK=Ma, META=Me)
+    print('saved', outpath, flush=True)
 
 
 main()
