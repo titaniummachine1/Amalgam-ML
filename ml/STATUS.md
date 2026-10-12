@@ -265,3 +265,56 @@ Control split: AI owns odds, user owns bounded preset + panic-keybind override
   CHILDREN SURVIVE as orphans -> launch-with-log + poll pattern works. 4AM wipe
   killed everything incl. DB writer (resumed cleanly: per-demo commits).
   Stop-Process -Id <my-own-pid> is safe (shell survives); never touch others' PIDs.
+
+## 2026-10-11/12: sim-first era (offline truth loop, no game)
+
+- DIRECTION (user-ordered): parser-only data path. DemoLoop live-capture built
+  then REMOVED (commits ebec4c86 -> 48ca9109); training consumes STV-demo truth
+  + ported engine formulas + BSP map soup. No game, no supervision needed.
+- LEAK REFERENCE (read-only, NEVER committed): C:/gitProjects/tf2-source-code
+  (sparse: game/shared, game/server, engine, public, raytrace, mathlib, common,
+  tier0/1). Rule: numeric constants + independently written code only; never
+  `git add` anything under it (DMCA risk to the repos). Sibling folder, not in repo.
+- LIVE movement file: game/shared/tf/tf_gamemovement.cpp (in server_tf.vpc).
+  game/shared/tf2/ is DEAD (no .vpc references it; caught before porting).
+  Constants: accel 10, airaccel 10, friction 4, stop 100, gravity 800,
+  aircap 30, jump 289, wish-thresh 40, back-clamp 0.9/100, dt 0.015.
+  Ground = WalkMove (NOT WalkMove2); air = base AirMove; friction = base.
+- CANONICAL NEW FILES (this era; everything else in ml/ is legacy — read but
+  do not delete others' working scripts):
+  ml/movesim.py (formula port) + ml/validate_movesim.py (free-space gate PASS:
+  MGE-calibrated: 90-mass 0.35>0.30, round-trip res 0.000, capped 0.001) +
+  ml/parity_movesim.py (Python<->Rust 20k cases BIT-IDENTICAL 0.0) +
+  ml/mapsoup.py (BSP->collision soup) + ml/souptrace.py (ray + wall-stop gate) +
+  ml/diag_stops.py, ml/dbg6.py, ml/dbg7.py (one-off forensics).
+  C:/gitProjects/tf2-movesim/ (separate Rust workspace: movesim-core 6/6 unit
+  tests PASS + rollout-cli parity harness). C++ runtime port comes at ship time.
+- DATA HARDENING (byte-proven, all in-repo scripts updated):
+  STV velocity columns are FROZEN (parser repeats baseline; bytes prove positions
+  update, velocities repeat verbatim) -> derive velocity from positions x66.67
+  (engine does the same: EstimateAbsVelocity precedent; arcs fit -400*DT^2 to 2%).
+  STV flags include stale rows (airborne-but-motionless) -> quarantine logic.
+  Teleport cut 300->80hu (182hu spawn snap fabricated -9458hu/s "velocity";
+  legit max ~60hu/tick). Pipeline successors must adopt 80hu (trainB used 300hu;
+  do NOT retrain champion inputs mid-experiment - comparability).
+  Duck maxspeed x1/3 assumption; class table fallback when mspd missing.
+- MAP SOUP (beta4b): 141,008 tris from 6594 solid brushes (PLAYERSOLID mask,
+  bevels kept, outward-normal clipper); 30 illusionary + 4 door brushes excluded
+  via model-face plane matching (near-miss empty); 0 displacements; 1491 static
+  props (733 solid) = documented gap (meshes later); movers skipped+counted.
+  File: ~/Downloads/mge_ds/soup_mge_training_v8_beta4b.npz (tris/contents/doors/meta).
+- ARCHITECTURE (locked): sim owns physics+collisions (code, validated, cannot
+  drift); map lives in soup (never in model); model learns ONLY behavior
+  (intended inputs). Targets always observed truth (no self-training loop).
+  Unpredictable ticks (jump/blast/teleport/knockback) = zero loss weight,
+  context preserved. Dual rollouts (policy-inputs vs demo-derived-inputs)
+  separate physics error from behavior error. Geometry-as-input (wall probes)
+  is a LATER experiment, not a requirement. Transformer: early-exit AR
+  (stop at intercept solution), binned-input tokens, confidence head, 5ms
+  measured budget; must beat champion 97.7/87.2/61.5/28.0/11.9 on frozen eval.
+- ANTI-CONFUSION RULES (Stockfish discipline): STATUS.md is the single source
+  of truth (update every session); every new module docstring cites its spec
+  (leak file:line) + gate + usage; dead code deleted same-day (never piles);
+  one-off debug lives in %TEMP%/opencode (never repo); gates assert before
+  downstream runs (verify_csv, parity 1e-9, validation PASS); training inputs
+  pinned by filename; no two scripts own the same step (canonical list above).
