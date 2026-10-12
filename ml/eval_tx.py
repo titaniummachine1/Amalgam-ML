@@ -90,7 +90,7 @@ def main():
                     # predicted jumps not yet simulated (landing unknown
                     # without traces) — under-predicts z on jump futures.
                 pr = rollout_free(v0, p0, FUT, inp, grf, ms, AIRCAP, views)
-                truth = POS[gi]
+                truth = POS[gi] + p0  # POS stored relative to window start + p0  # POS stored relative to window start + p0  # POS stored relative to window start
                 for h in HOR:
                     e = float(np.linalg.norm(pr[h - 1] - truth[h - 1]))
                     hits[h][1] += 1

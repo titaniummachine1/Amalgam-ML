@@ -1,6 +1,14 @@
 # LEDGER — what exists, what runs, what's dead. Read this first after compaction.
 
-## Rules (never violate)
+## Hard lessons (never repeat)
+- abs-vs-rel (2026-10-12): eval_tx compared ABSOLUTE rollout positions against
+  RELATIVE stored truth -> 0.4% hits regardless of model. Rollout gate passed
+  because it compares correctly. Lesson: the sanity check (sim replicates demo
+  with same packets) must use identical frames on both sides; verify the
+  comparator before judging the model. Oracle (truth tokens -> sim) is the
+  machinery check: 84.9% @7 on eye-fresh windows.
+- Binning convention verified self-consistent (encode->decode median cos 0.98,
+  zero ticks below 0.9 over 57k ticks). No sign/frame bug.
 - Training targets are OBSERVED TRUTH only. No self-training loops (no drift).
 - Sim-truth disagreement doctrine: same inputs through the sim MUST reproduce
   truth (rollout_gate enforces: 2.4hu @7, 7.7hu @33). Any excess deviation is a
