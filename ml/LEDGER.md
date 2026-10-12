@@ -43,6 +43,18 @@
 ## REMOVED (git history only)
 - `DemoLoop.*`, `ml/ingest_demoloop.py` — offline-only direction; restore = 1 cmd.
 
+## RUNBOOK (exact commands; run verbatim after compaction)
+Corpus (beta4b, 107 CSVs, stride 2, eval every 20th demo):
+  list:  powershell Get-ChildItem mge_csv *beta4b.dem.csv (no hurt/proj) -> beta4b_list.txt
+  build: 4x Start-Process python ml/build_all_rollouts.py <list> <outdir=~/Downloads/mge_ds/rollout_beta4b> <soup> 2 20 <i> 4  (logs: %TEMP%/opencode/corpus_c<i>.log)
+  merge: cat rollout_beta4b/train_list_c*.txt > train_all.txt ; cat *eval_list_c*.txt > eval_all.txt (dedupe)
+Train (CPU, ~1.5h @30ep on ~100k rows):
+  python ml/train_tx.py <train_all.txt> 12 <out.tx.pt>   (12 epochs v1; smoke used 30 on 1k rows)
+Eval (champion protocol, held-out demos ONLY):
+  python ml/eval_tx.py <out.tx.pt> $(cat eval_all.txt)   (compare @7/13/20 vs champ 97.7/87.2/61.2; FUT=20 caps horizons)
+Verdict: beats frozen-input rollout (rollout_gate) AND approaches champ @7/13/20 -> ship track (int8 export + C++ port + quant gate <=0.5pp + 5ms measured); else diagnose via ERR/token-hist, next variant.
+Never: train on eval_all demos; single-CSV smoke models for verdicts (overfit toy); wall rows (open-only v1).
+
 ## PENDING
 - both27 ship (quant gate ≤0.5pp, C++ 27-dim swap, rebuild, push) after ep7 verdict.
   ep7 PAUSED 2026-10-12 for corpus build (CPU contention; checkpoints safe, resume anytime).
