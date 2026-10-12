@@ -20,11 +20,16 @@
 | `ml/movesim.py` | TF2 movement formulas (live `tf/` file, build-verified; `tf2/` dir is DEAD) | free-space PASS 400k; jump 289; arcs fit -400*DT^2 to 2%; DT=0.015 |
 | `ml/validate_movesim.py` | formula gate | PASS (90-mass 0.35, res 0.0, capped 0.001) |
 | `ml/parity_movesim.py` | Python↔Rust differential | 20k cases bit-identical (0.0) |
-| `ml/train_both27.py` | GRU-27 trainer (ep7: 132-horizon, blame, adaptive, jumpmask) | running; best eval 382.16 |
+| `ml/train_both27.py` | GRU-27 trainer (ep7: 132-horizon, blame, adaptive, jumpmask) | DIED ~2026-10-12 14:03 (shell wipe; best eval 382.16 ckpt safe). Relaunch AFTER transformer v1 (CPU). |
 | `ml/hit_eval_both.py` | verdict vs champion | beats = ship |
 | `ml/mapsoup.py` | BSP→collision soup (srctools, engine-exact contents) | beta4b: 141008 tris, 34 brushes excluded, doors tracked |
 | `ml/build_rollout.py` | counterfactual dataset: 33+20 windows, ego-frame 25-tokenizer, masks, rollout errors | YIELD 2026-10-12: 1114/CSV (stride 3) -> ~140k rows over 125 demos; masks 24/6/40/30; rollout med 0.6-8.8hu. CORPUS BUILD running 2026-10-12: 107 beta4b CSVs, 4 workers, stride 2, eval every 20th demo. Corpus-wide masks (28 files): clean 9.6 / capped 8.7 / flight 59 / blast 22.6. v1 = open-only + stride 2 (~100k rows, enough for 120k-param model); stride-1 + wall rows + sweeper = v2 if needed. |
-| `ml/dbg7.py` | miss forensics (current) | in progress |
+| `ml/dbg7.py` | miss forensics (done) | verdict: stops = body-blocks (d=0-4hu) + dup artifacts; soup exonerated (floor-hit + free-path pass) |
+| `ml/souptrace.py` | wall-stop gate (SUPERSEDED by rollout_gate for sim fidelity) | FAIL was detector confounds, not soup. Keep for soup-geometry spot checks. |
+| `ml/sweep.py` | gate-grade hull sweep (bump loop, ClipVelocity, step-up) | selftest PASS (synthetic + soup floor + free-path) |
+| `ml/build_all_rollouts.py` | corpus driver (per-CSV npz, resume-safe, train/eval split by demo) | running 4 workers over 107 beta4b |
+| `ml/train_tx.py` | tiny AR transformer (d64/2L/4H, 25 tokens + jump + confidence) | smoke learns (val 1.94->0.66 acc .84); multi-file corpus support |
+| `ml/eval_tx.py` | AR eval, champion protocol (greedy decode, frozen eye, demo-grounded) | smoke runs; in-train val is window-random (early-stop only) — honest verdict = held-out demos; jump sim TODO |
 | `ml/rollout_gate.py` | THE agreement gate: recovered-input rollouts vs truth (dataset engine) | PASS 230 seg: 2.4/3.9/5.8/7.7hu @7/13/20/33, beats frozen 3-8x |
 | `ml/build_jumpmask.py`, `ml/build_w7.py` | jump mask, weapon cache (ep7 inputs) | built |
 | `C:/gitProjects/tf2-movesim/` | separate Rust workspace (formulas+CLI, unsupervised-safe) | 6/6 tests, parity harness |
