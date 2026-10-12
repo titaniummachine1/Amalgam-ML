@@ -98,6 +98,13 @@ def main():
     ce = nn.CrossEntropyLoss(reduction='none')
     bce = nn.BCEWithLogitsLoss(reduction='none')
     conf_lab_all = (ERR < 24.0).astype(np.float32)
+    # class rebalance vs none-collapse: inverse-sqrt frequency, mean-1
+    # normalized (Catastrophe #8 sequel: leaky val hid majority exploitation).
+    fq = np.bincount(TOK[ti].ravel(), minlength=NVOC).astype(np.float64) + 1.0
+    cls_w = (1.0 / np.sqrt(fq))
+    cls_w *= NVOC / cls_w.sum()
+    cls_w_t = torch.tensor(cls_w, dtype=torch.float32, device=dev)
+    print('token prior top:', np.argsort(-fq)[:5].tolist(), flush=True)
 
     def batch(idxs, train):
         Xt = torch.tensor(X[idxs], dtype=torch.float32, device=dev)
@@ -112,7 +119,7 @@ def main():
         jin = torch.zeros_like(Jt)
         jin[:, 1:] = Jt[:, :-1]
         logits, jlog, conf = net(Xt, tin, jin.long())
-        lce = (ce(logits.reshape(-1, NVOC), Tt.reshape(-1)).reshape_as(Tt) * Wt)
+        lce = (ce(logits.reshape(-1, NVOC), Tt.reshape(-1)).reshape_as(Tt) * Wt * cls_w_t[Tt])
         lj = (bce(jlog, Jt) * Wt)
         lc = bce(conf, Ct).mean(dim=1)
         denom = Wt.sum().clamp_min(1.0)
