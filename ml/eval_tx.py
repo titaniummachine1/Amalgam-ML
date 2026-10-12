@@ -20,7 +20,7 @@ import torch
 
 sys.path.insert(0, __import__('os').path.dirname(__file__))
 from train_tx import TinyAR, HIST, FUT, D, NL, NH, FF
-from movesim import DT, rollout_free, yaw_to_fwd
+from movesim import AIRCAP, DT, rollout_free, yaw_to_fwd
 
 HOR = [7, 13, 20]
 R = 24.0
@@ -86,8 +86,10 @@ def main():
                     wd, ws = bin_to_world(int(ptoks[i, k]), ey0)
                     inp.append((wd, ws))
                     views.append(yaw_to_fwd(ey0))
-                    grf.append(True)  # free-space v1 (demo-grounded eval later)
-                pr = rollout_free(v0, p0, FUT, inp, grf, ms, views=views)
+                    grf.append(MSK[gi, k] != 2)  # demo flight flags (v1);
+                    # predicted jumps not yet simulated (landing unknown
+                    # without traces) — under-predicts z on jump futures.
+                pr = rollout_free(v0, p0, FUT, inp, grf, ms, AIRCAP, views)
                 truth = POS[gi]
                 for h in HOR:
                     e = float(np.linalg.norm(pr[h - 1] - truth[h - 1]))
