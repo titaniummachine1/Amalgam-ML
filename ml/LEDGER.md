@@ -23,7 +23,7 @@
 | `ml/train_both27.py` | GRU-27 trainer (ep7: 132-horizon, blame, adaptive, jumpmask) | DIED ~2026-10-12 14:03 (shell wipe; best eval 382.16 ckpt safe). Relaunch AFTER transformer v1 (CPU). |
 | `ml/hit_eval_both.py` | verdict vs champion | beats = ship |
 | `ml/mapsoup.py` | BSP→collision soup (srctools, engine-exact contents) | beta4b: 141008 tris, 34 brushes excluded, doors tracked |
-| `ml/build_rollout.py` | counterfactual dataset: 33+20 windows, ego-frame 25-tokenizer, masks, rollout errors | YIELD 2026-10-12: 1114/CSV (stride 3) -> ~140k rows over 125 demos; masks 24/6/40/30; rollout med 0.6-8.8hu. CORPUS BUILD running 2026-10-12: 107 beta4b CSVs, 4 workers, stride 2, eval every 20th demo. Corpus-wide masks (28 files): clean 9.6 / capped 8.7 / flight 59 / blast 22.6. v1 = open-only + stride 2 (~100k rows, enough for 120k-param model); stride-1 + wall rows + sweeper = v2 if needed. |
+| `ml/build_rollout.py` | counterfactual dataset: 33+20 windows, ego-frame 25-tokenizer, masks, rollout errors | CORPUS DONE 2026-10-12: 107 beta4b CSVs -> 101 train + 6 eval demos; ~95k rows; masks 9.6/8.5/61/20.5. v1 = open-only + stride 2; stride-1 + wall rows + sweeper = v2 if needed. |
 | `ml/dbg7.py` | miss forensics (done) | verdict: stops = body-blocks (d=0-4hu) + dup artifacts; soup exonerated (floor-hit + free-path pass) |
 | `ml/souptrace.py` | wall-stop gate (SUPERSEDED by rollout_gate for sim fidelity) | FAIL was detector confounds, not soup. Keep for soup-geometry spot checks. |
 | `ml/sweep.py` | gate-grade hull sweep (bump loop, ClipVelocity, step-up) | selftest PASS (synthetic + soup floor + free-path) |
