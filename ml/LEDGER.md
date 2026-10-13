@@ -88,3 +88,14 @@ Never: train on eval_all demos; single-CSV smoke models for verdicts (overfit to
   join 54.38.205.24:28045, soup 32k tris) + stride-1 → combined ~170k rows → retrain d64.
   NOTE loss scale: v1 1.49 vs v2/v3 0.078/0.061 NOT comparable (inverse-sqrt rebalance shrinks effective scale ~20x —
   cls_w mean-1 over classes, batches dominated by low-w none). Only v2↔v3 comparable. vacc/hits are scale-free.
+- NO-CHEAT CERTIFICATE 2026-10-13 (`ml/gate_wall.py`, beta4b, orange soup 32k tris unused — see below):
+  wall-impact windows (speed>150, wall<250hu ahead, slowdown<60, trace-ground==demo-ground all ticks), recovered input
+  packets replayed through WalkMove + hull sweep + down-traces, ZERO future truth: n=24, err med **1.6/2.1/3.6hu**
+  @7/13/20 (p90 3.6/5.5/10.6; 61 candidates, 37 trace-skipped on ramps/edges). Sim replicates wall behavior like engine.
+  Open-space gate (rollout_gate) 2.4/3.9/5.8hu still holds. Cheat-audit: eval AR loop reads TOK only at scoring
+  (eval_tx.py:81) + truth POS (line 98); predictions come from net() only. No future leaks into model inputs, ever.
+- ORANGE TRACK PARKED (hollow, verified not cheated): orange STV records entities every 3rd tick (tick-step hist 3:108139,
+  consecutive pairs 0/109999) → inverse_*/rollout (DT-exact) cannot consume it; rollout_orange = 21 files, 0 rows.
+  BSP (52MB, from Brygada fastdl) + soup (32k tris) kept; gap-aware (3xDT) physics = future work, NOT silent. beta4b MGE
+  (every-tick) remains the only training data. v34 download adventure (gamebanana API, skial/lazypurple fastdl, Anubis
+  walls) archived in DIARY.
