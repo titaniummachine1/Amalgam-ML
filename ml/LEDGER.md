@@ -82,3 +82,9 @@ Never: train on eval_all demos; single-CSV smoke models for verdicts (overfit to
 - VERDICT v2 2026-10-13 (same v2 eval set, 10980 rows): tx_v1 82.9/42.8/23.6 (tacc .133) vs tx_v2 **83.2/49.4/28.8**
   (tacc .124). Rebalance trades single-token acc for long-horizon hits (+6.6pp @13, +5.2pp @20) — REAL gain, not data artifact.
   Gap to champ (97.7/87.2/61.2) still large, worst @13. Next: bigger model (d96/4L/30ep) on v2, then stride-1 + sweeper corpus.
+- VERDICT v3 2026-10-13 (d96/4L/4H/ff192, 30ep, same v2 eval): **82.5/46.8/26.6** (tacc .137, val .0607) vs v2 83.2/49.4/28.8.
+  Bigger model does NOT win on 78k rows (better leaky-val, worse held-out hits; token-acc up, hits down — acc≠hits again).
+  Bottleneck = DATA not capacity. v2 (d64/2L) stays champion. Next: orange corpus (BSP secured from Brygada fastdl via
+  join 54.38.205.24:28045, soup 32k tris) + stride-1 → combined ~170k rows → retrain d64.
+  NOTE loss scale: v1 1.49 vs v2/v3 0.078/0.061 NOT comparable (inverse-sqrt rebalance shrinks effective scale ~20x —
+  cls_w mean-1 over classes, batches dominated by low-w none). Only v2↔v3 comparable. vacc/hits are scale-free.
