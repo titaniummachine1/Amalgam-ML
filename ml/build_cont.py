@@ -70,6 +70,7 @@ def main():
             V = np.array([[f(r['vx']), f(r['vy']), f(r['vz'])] for r in win])
             cls = int(f(win[0]['class']))
             ms0 = f(win[0]['mspd']) or CLASS_SPEED.get(cls, 300.0)
+            raw = np.zeros((FUT, 3))
             for k in range(FUT):
                 r = win[HIST + k]
                 try:
@@ -83,8 +84,20 @@ def main():
                 ws = inv['wishspeed'] if wd is not None else 0.0
                 if wd is not None:
                     wd = np.asarray(wd, dtype=float).ravel()
-                    WC[gi, k, 0:2] = wd[:2]
-                WC[gi, k, 2] = ws / 400.0
+                    raw[k, 0:2] = wd[:2]
+                raw[k, 2] = ws / 400.0
+            # INTENT DENOISE (2026-10-14): raw per-tick wishes are white noise
+            # (lag-1 cos 0.037 — STV jitter dominates 1-tick deltas). Humans
+            # actuate ~5Hz; boxcar ±2 ticks (75ms) kills 66Hz noise, keeps real
+            # strafes. Norm<0.25 after smoothing -> no input.
+            for k in range(FUT):
+                lo, hi = max(0, k - 2), min(FUT, k + 3)
+                m = raw[lo:hi].mean(axis=0)
+                n = float(np.linalg.norm(m[:2]))
+                if n < 0.25:
+                    continue
+                WC[gi, k, 0:2] = m[:2] / n
+                WC[gi, k, 2] = m[2]
         out = fp + '.cont.npz'
         tmp = out + '.tmp.npz'
         np.savez(tmp, WC=WC, MSK=MSK)

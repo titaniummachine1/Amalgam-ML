@@ -113,6 +113,22 @@ Never: train on eval_all demos; single-CSV smoke models for verdicts (overfit to
   small). Wall-gate with TRUE box: n=24, err med **1.7/2.1/3.3hu** @7/13/20, p90 3.7/5.6/9.9 (beats 9-ray 1.6/2.1/3.6
   on p90); unstick nudges ~0 (3 win, max 0.5hu = STV rounding only). Replay-from-truth is engine-faithful; the
   residual is the certificate, not a promise.
+- CORPUS POISON 2026-10-14 (`ml/build_rollout.py`, ALL corpora since v2): `inverse_ground`
+  returns a 3-vector wishdir, `inverse_air` a 2-vector; history line `x[k,11:13] = wd`
+  threw ValueError on EVERY grounded-moving tick → window dropped. Old corpora =
+  99.8% air, ZERO grounded wishes in 10149 rows (measured). Models v2–v5 NEVER SAW
+  a ground strafe; coast (air-drift optimal) unbeatable by construction. Fix:
+  `ravel()[:2]` + same ±2 intent-smoothing on history wishes as targets.
+- TARGET DENOISE 2026-10-14 (`ml/build_cont.py`): raw per-tick STV wishes are white
+  noise (lag-1 cos 0.037, 46% flip >90°/tick — STV jitter dominates 1-tick deltas).
+  Boxcar ±2 (75ms) → lag-1 cos 0.842, flips 6%, moving frac .94→.66 (jitter
+  zeroed). Smoothed-oracle replays to 64.4/53.3 @13/20 (vs coast 52.3/26.6 on the
+  same file) — formulation sound, 12/27pp headroom for prediction.
+- TRAIN HYGIENE 2026-10-14 (`ml/train_cont.py`): per-row-mean loss (was batch-sum /
+  denom → air-heavy batches blew up, train=88 vs val=2.3 print), grad clip 1.0,
+  FILE-split val (stride-1 random split leaked), teacher-noise ramp (AR-robustness),
+  +8 feats (ego hp, enemy rel pos/vel/present — present 88%, med dist 437hu),
+  NFEAT 14→22 (old ckpts obsolete).
 - SOLIDITY ROOT CAUSE 2026-10-13 (`ml/mapsoup.py` NEVER-model drop): 23 excluded-model
   brushes were `func_brush` solidity=1 (`BRUSHSOLID_NEVER`, `modelentities.h:46-48`) — non-solid
   by engine definition; now dropped by construction. 7 giant phantoms proven orphans

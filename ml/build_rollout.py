@@ -13,8 +13,11 @@ Tokenizer (ego frame, matches m_vAccel contract): none=0 (no input or
   ws<25); else octant(8) x speed-ternary(<150,>=150) -> 1..24; jump bit sep.
 v1: open-space segments only (soup ray excludes wall-ahead; wall rows come
 with traces later). Free-space sim; soup used for exclusion only.
-History feats F=14: dxyz rel/1000, vxyz/1000, grounded, eye sin/cos,
-mspd/400, class/9, rec wishdir world (2, 0 if none), rec ws/400.
+History feats F=22: dxyz rel/1000, vxyz/1000, grounded, eye sin/cos,
+mspd/400, class/9, rec wishdir world (2, 0 if none), rec ws/400,
+ego hp/200, enemy rel xyz/1000 (3), enemy vel/1000 (3), enemy present (1).
+Enemy = nearest same-tick other ent (opposite team preferred) — the duel
+reactive signal ego kinematics cannot carry.
 Usage: python ml/build_rollout.py <csv> <soup.npz> <out.npz> [stride]
 """
 import math
@@ -31,7 +34,7 @@ from souptrace import load_soup, ray_hit, build_grid, grid_hit
 HIST = 33
 FUT = 20
 ERR_HOR = [4, 7, 10, 13, 17, 20]
-FEATS = 14
+FEATS = 22
 
 
 def f(x, d=0.0):
@@ -58,6 +61,16 @@ def main():
     soup, _, _ = load_soup(souppath)
     grid = build_grid(soup)
     print('grid cells=%d' % len(grid[2]), flush=True)
+    # enemy join: per-ent tick->row maps (same-tick opponent state)
+    tickmap = {}
+    for oe, rs2 in rows.items():
+        m = {}
+        for r2 in rs2:
+            try:
+                m[int(r2['tick'])] = r2
+            except ValueError:
+                pass
+        tickmap[oe] = m
     X, TOK, JMP, POS, ERR, MSK, META = [], [], [], [], [], [], []
     nwin = nwall = ntele = neye = 0
     mhist = [0, 0, 0, 0]
@@ -111,20 +124,43 @@ def main():
                     continue
             # history features + recovered context inputs
             Hv = V[:HIST + 1]
+            # raw per-tick history wishes (smoothed below: same INTENT DENOISE
+            # as build_cont targets — net must read signal, not STV jitter)
+            hwd = np.zeros((HIST, 2))
+            hws = np.zeros(HIST)
+            hfail = False
+            for k in range(HIST):
+                r = win[k]
+                msk = ms0 * (DUCK_FRAC if (int(f(r['flags'])) & FL_DUCKING) else 1.0)
+                gr = bool(int(f(r['flags'])) & FL_ONGROUND)
+                try:
+                    if gr:
+                        inv = inverse_ground(Hv[k], Hv[k + 1], msk)
+                    else:
+                        inv = inverse_air(Hv[k], Hv[k + 1])
+                except (ValueError, KeyError, IndexError):
+                    hfail = True
+                    break
+                wd = inv['wishdir']
+                if wd is not None:
+                    hwd[k] = np.asarray(wd, dtype=float).ravel()[:2]
+                    hws[k] = inv['wishspeed']
+            if hfail:
+                i += 1
+                continue
             x = np.zeros((HIST, FEATS))
             ok = True
+            egt = f(win[0].get('team'), -1.0)
             for k in range(HIST):
                 r = win[k]
                 try:
                     ey = f(r['eyey'])
                     msk = ms0 * (DUCK_FRAC if (int(f(r['flags'])) & FL_DUCKING) else 1.0)
                     gr = bool(int(f(r['flags'])) & FL_ONGROUND)
-                    if gr:
-                        inv = inverse_ground(Hv[k], Hv[k + 1], msk)
-                    else:
-                        inv = inverse_air(Hv[k], Hv[k + 1])
-                    wd = inv['wishdir']
-                    ws = inv['wishspeed'] if wd is not None else 0.0
+                    lo, hi = max(0, k - 2), min(HIST, k + 3)
+                    mw = hwd[lo:hi].mean(axis=0)
+                    nw = float(np.linalg.norm(mw))
+                    ms = hws[lo:hi].mean()
                     x[k, 0:3] = (P[k] - p0) / 1000.0
                     x[k, 3:6] = Hv[k] / 1000.0
                     x[k, 6] = 1.0 if gr else 0.0
@@ -132,9 +168,44 @@ def main():
                     x[k, 8] = math.cos(math.radians(ey))
                     x[k, 9] = msk / 400.0
                     x[k, 10] = cls / 9.0
-                    if wd is not None:
-                        x[k, 11:13] = wd
-                    x[k, 13] = ws / 400.0
+                    if nw >= 0.25:
+                        x[k, 11:13] = mw / nw
+                        x[k, 13] = ms / 400.0
+                    x[k, 14] = f(r.get('health'), 200.0) / 200.0
+                    # enemy reactive signal: nearest same-tick opponent
+                    try:
+                        tk = ticks[k]
+                        best, bestd = None, 1e18
+                        fallback, fbd = None, 1e18
+                        for oe, m in tickmap.items():
+                            if oe == e:
+                                continue
+                            orow = m.get(tk)
+                            if orow is None:
+                                continue
+                            try:
+                                ex = (f(orow['ox']) - P[k][0]) / 1000.0
+                                eyy = (f(orow['oy']) - P[k][1]) / 1000.0
+                                ezz = (f(orow['oz']) - P[k][2]) / 1000.0
+                            except (ValueError, KeyError):
+                                continue
+                            dd = ex * ex + eyy * eyy + ezz * ezz
+                            opp = (f(orow.get('team'), -2.0) != egt)
+                            if opp and dd < bestd:
+                                best, bestd = orow, dd
+                            if dd < fbd:
+                                fallback, fbd = orow, dd
+                        erow = best if best is not None else fallback
+                        if erow is not None:
+                            x[k, 15] = (f(erow['ox']) - P[k][0]) / 1000.0
+                            x[k, 16] = (f(erow['oy']) - P[k][1]) / 1000.0
+                            x[k, 17] = (f(erow['oz']) - P[k][2]) / 1000.0
+                            x[k, 18] = f(erow.get('vx'), 0.0) / 1000.0
+                            x[k, 19] = f(erow.get('vy'), 0.0) / 1000.0
+                            x[k, 20] = f(erow.get('vz'), 0.0) / 1000.0
+                            x[k, 21] = 1.0
+                    except (ValueError, KeyError, IndexError):
+                        pass
                 except (ValueError, KeyError, IndexError):
                     ok = False
                     break

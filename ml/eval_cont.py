@@ -23,6 +23,8 @@ def main():
     ckpt = torch.load(sys.argv[1], map_location='cpu', weights_only=False)
     if 'cfg' in ckpt:
         train_cont.D, train_cont.NL, train_cont.NH, train_cont.FF = ckpt['cfg'][:4]
+        if len(ckpt['cfg']) > 6:
+            train_cont.NFEAT = ckpt['cfg'][6]
     net = ContAR()
     net.load_state_dict(ckpt['net'])
     net.eval()
