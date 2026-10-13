@@ -56,7 +56,8 @@ def main():
         from boxtrace import load_brushes, HULL_STAND, HULL_DUCK
         import os as _os
         drop = []
-        dp = _os.path.join(_os.path.dirname(sys.argv[4]), 'brush_drop_beta4b.txt')
+        dp = sys.argv[6] if len(sys.argv) > 6 else _os.path.join(
+            _os.path.dirname(sys.argv[4]), 'brush_drop_beta4b.txt')
         if _os.path.exists(dp):
             drop = [int(l.strip()) for l in open(dp) if l.strip().isdigit()]
         BR = load_brushes(sys.argv[4], drop)

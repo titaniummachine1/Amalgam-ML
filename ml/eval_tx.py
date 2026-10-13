@@ -110,4 +110,5 @@ def main():
     print('NOTE: FUT=20 v1 (champion reports to 66); free-space eval; demo-grounded next.', flush=True)
 
 
-main()
+if __name__ == '__main__':
+    main()

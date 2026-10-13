@@ -119,7 +119,29 @@ def load_solid_brushes(path):
                 cn = ent['classname']
             except Exception:
                 continue
-            if cn not in EXCLUDE:
+            keep_brush = False
+            if cn == 'func_brush':
+                # engine truth (modelentities.h): TOGGLE=0, NEVER=1, ALWAYS=2.
+                # NEVER is non-solid (Spawn: VPHYSICS, never BSP); TOGGLE with
+                # StartDisabled starts non-solid. Those brushes must NOT be
+                # static collision (this was the phantom-giant source: an
+                # 819-face NEVER model swallowing play areas).
+                try:
+                    sol = int(float(ent['solidity'])) if 'solidity' in ent else 2
+                except Exception:
+                    sol = 2
+                try:
+                    dis = int(float(ent['StartDisabled'])) if 'StartDisabled' in ent \
+                        else (int(float(ent['startdisabled'])) if 'startdisabled' in ent else 0)
+                except Exception:
+                    dis = 0
+                if sol == 1 or (sol == 0 and dis):
+                    pass  # drop below
+                else:
+                    keep_brush = True
+            elif cn not in EXCLUDE:
+                keep_brush = True
+            if keep_brush:
                 continue
             try:
                 ps = set()
