@@ -283,9 +283,27 @@ def parse_packet(payload, probe=False, ids=None, want_move=True):
 
 def _skip_message(br, msgid, nbits):
     """Skip one message. Returns False if unknown (caller stops).
-    Layouts from common/netmessages.cpp ReadFromBuffer + protocol.h ids."""
+    Layouts from common/netmessages.cpp ReadFromBuffer + protocol.h ids.
+
+    svc_PacketEntities (26) is SELF-DELIMITING: it declares m_nLength in bits
+    and the reader does SeekRelative(m_nLength), so it can be skipped without
+    any sendtable knowledge. That is what lets the walk reach CLC_Move.
+    """
     try:
-        if msgid == NETMSG_Tick:                       # net_Tick=3
+        if msgid == svc_PacketEntities:                  # 26
+            br.read(MAX_EDICT_BITS)                      # max entries
+            isdelta = br.read(1)
+            if isdelta:
+                br.read(32)                              # delta from
+            br.read(1)                                   # baseline
+            br.read(MAX_EDICT_BITS)                      # updated entries
+            length = br.read(24)                         # bits of payload
+            br.read(1)                                   # updatebaseline
+            if br.p + length > nbits:
+                return False
+            br.p += length
+            return True
+        if msgid == NETMSG_Tick:                         # 3
             br.read(32); br.read_float(); br.read_float()
         elif msgid == svc_ServerInfo:                  # 8
             br.read(32); br.read(32); br.read_string()

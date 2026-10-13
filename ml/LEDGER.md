@@ -113,6 +113,31 @@ Never: train on eval_all demos; single-CSV smoke models for verdicts (overfit to
   small). Wall-gate with TRUE box: n=24, err med **1.7/2.1/3.3hu** @7/13/20, p90 3.7/5.6/9.9 (beats 9-ray 1.6/2.1/3.6
   on p90); unstick nudges ~0 (3 win, max 0.5hu = STV rounding only). Replay-from-truth is engine-faithful; the
   residual is the certificate, not a promise.
+- USERCMD PARSER 2026-10-14 (`ml/demoin.py`): frame walk VERIFIED on 200k frames
+  (all dem_packet, 93-byte header: cmd+tick+democmdinfo_t(76)+seq+seqack+len).
+  Message ids from leak common/protocol.h:86-161 (net_Tick=3, svc_PacketEntities=26,
+  clc_Move=9). svc_PacketEntities is SELF-DELIMITING (own bit length) so it is
+  skippable without sendtables — earlier stale-INVAR skip was what killed the walk.
+  EXHAUSTIVE bit-offset scan (no id assumption, nnew 1..15) over 50 frames: the ONLY
+  recurring CLC_Move-shaped payload is at bit 48, inside net_Tick's own payload, with
+  a constant length=178 across frames — provably a false positive. Combined with the
+  engine (hltvclientstate.cpp:244 attaches the recorder to HLTV's SERVER-FACING
+  channel; both net_chan.cpp recording hooks are on the incoming server->HLTV path;
+  hltvserver.cpp:1957 "MOTODO HLTV must store user commands too") => these demos do NOT
+  contain client inputs. NOTE: never claim absence from a broken parser — the first
+  version of this conclusion was asserted while the parser was still dying at msgid 40.
+- COLLISION ROOT CAUSE 2026-10-14 (`ml/boxtrace.py`): `load_brushes` defaulted to
+  `drop=()`, so the 31 verified phantom brushes were LIVE in every collision run.
+  Giant 6419 (1286x1300x2547) has the player 2163hu inside on Z -> every tick
+  startedsolid -> unstick shoved the hull 1.5hu sideways -> zero forward progress,
+  ~3hu/tick injected error. Also 10 infinite-volume (+-1e9) skybox brushes made
+  "inside solid" true map-wide. Bisect proof: no-collision 0.18hu@7 vs collision
+  21.3hu@7. Fixes: auto-load brush_drop list (cannot be silently ignored again),
+  new `brush_solid_mge_training_v8_beta4b.npz` (6528 brushes, drops baked,
+  infinities removed), 0.05hu hull vertical shrink, contact epsilon.
+  ORACLE (`ml/oracle_tick.py`, true recovered inputs + swept-box collision, 12 wins):
+  hit<24hu 100% at EVERY horizon; median 0.19/0.36/0.57/4.05/5.22/5.08/6.77hu at
+  7/13/20/33/66/100/132 ticks. 1s=5.2hu, 2s=6.8hu. Tracer selftest PASS.
 - CORPUS POISON 2026-10-14 (`ml/build_rollout.py`, ALL corpora since v2): `inverse_ground`
   returns a 3-vector wishdir, `inverse_air` a 2-vector; history line `x[k,11:13] = wd`
   threw ValueError on EVERY grounded-moving tick → window dropped. Old corpora =
