@@ -113,3 +113,16 @@ Never: train on eval_all demos; single-CSV smoke models for verdicts (overfit to
   small). Wall-gate with TRUE box: n=24, err med **1.7/2.1/3.3hu** @7/13/20, p90 3.7/5.6/9.9 (beats 9-ray 1.6/2.1/3.6
   on p90); unstick nudges ~0 (3 win, max 0.5hu = STV rounding only). Replay-from-truth is engine-faithful; the
   residual is the certificate, not a promise.
+- SOLIDITY ROOT CAUSE 2026-10-13 (`ml/mapsoup.py` NEVER-model drop): 23 excluded-model
+  brushes were `func_brush` solidity=1 (`BRUSHSOLID_NEVER`, `modelentities.h:46-48`) — non-solid
+  by engine definition; now dropped by construction. 7 giant phantoms proven orphans
+  (6-plane boxes matching ZERO faces map-wide; 29–21791 deep-swallow frames). Canonical
+  `brush_mge_training_v8_beta4b.npz` rebuilt (6569 brushes) + 31 audit drops; wall-gate
+  re-certified identical **1.7/2.1/3.3hu** (p90 3.7/5.6/9.9). Still missing: 733 solid static
+  props (points only, no meshes) — prop OBBs next.
+- VERDICT v5 2026-10-13 (continuous ContAR d64/2L, 30ep, 150631 s1 rows + WC sidecars,
+  best val 2.2852): **84.6/61.0/37.1** vs coast 86.5/59.5/34.8 on same s1 eval — FIRST model
+  to beat coast @13 (+1.5pp) and @20 (+2.3pp); loses @7 (−1.9pp, coast near-optimal at 7
+  ticks: exact-velocity continuation, model wish-noise hurts). Quantization ceiling broken
+  at steering horizons. v5 = new champion. Next: eval→world (sweep_box+grounded_box),
+  prop OBBs, orange gap-aware.
