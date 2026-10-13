@@ -113,6 +113,14 @@ def sweep(p0, p1, soup, max_bumps=4):
     return p_cur, hit_any, normal
 
 
+def sweep_box(p0, p1, BR, half, mask=0xFFFFFFFF, max_bumps=4):
+    """Real swept-box move (boxtrace core, same bump order as sweep()).
+    p = feet origin; box center = p + up*half[2]. Returns (pend, hit, normal).
+    Hull half extents are calibrated from demos (wall-gate), not asserted."""
+    from boxtrace import move_box
+    return move_box(p0, p1, half, BR, mask, max_bumps)
+
+
 def selftest(soup):
     """Synthetic box + soup floor. Raises on failure."""
     box = np.array([[[0., 0., 0.], [10., 0., 0.], [0., 10., 0.],

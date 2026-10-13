@@ -84,18 +84,17 @@ def brush_tris(sides):
     return tris
 
 
-def main():
-    t0 = time.time()
-    path = sys.argv[1]
-    out = sys.argv[2] if len(sys.argv) > 2 else None
+def load_solid_brushes(path):
+    """BSP -> list of (planes (S,4) outward-normal/unit, dist; inside: n.x<=d,
+    contents int) for PLAYERSOLID brushes after entity exclusion.
+    Shared by tri-soup (below) and brush-plane sidecar (build_brushes.py)."""
     bsp = BSP(path)
     print('map loaded', path.split('/')[-1].split('\\')[-1], flush=True)
 
     # --- brush soup: entity exclusion fills bsp_br below --------------------
     n_brush = 0  # set after exclusion
     n_solid = n_ladder = n_other = 0
-    all_tris = []
-    all_contents = []
+    out_brushes = []
     # --- brush entities: exclude non-solid/dynamic models' brushes -------
     # bsp.brushes contains ALL brushes (world + entity). Entity geometry ==
     # model faces exactly, so a brush whose every side-plane matches one of
@@ -203,13 +202,27 @@ def main():
                           float(s.plane.dist)) for s in br.sides]
             except Exception:
                 continue
-            for t in brush_tris(sides):
-                all_tris.append(t)
-                all_contents.append(contents.value)
+            out_brushes.append((sides, int(contents.value)))
         elif contents & LADDER:
             n_ladder += 1
         else:
             n_other += 1
+    print('brushes=%d solid=%d ladder=%d other=%d' % (
+        n_brush, n_solid, n_ladder, n_other), flush=True)
+    return out_brushes, n_brush, n_solid, n_ladder, n_other, door_pts
+
+
+def main():
+    t0 = time.time()
+    path = sys.argv[1]
+    out = sys.argv[2] if len(sys.argv) > 2 else None
+    brushes, n_brush, n_solid, n_ladder, n_other, door_pts = load_solid_brushes(path)
+    all_tris = []
+    all_contents = []
+    for sides, contents in brushes:
+        for t in brush_tris(sides):
+            all_tris.append(t)
+            all_contents.append(contents)
     tris = np.array(all_tris, dtype=np.float32).reshape(-1, 3, 3) \
         if all_tris else np.zeros((0, 3, 3), dtype=np.float32)
     cont = np.array(all_contents, dtype=np.uint32)
@@ -254,4 +267,5 @@ def main():
         print('saved+verified', out, flush=True)
 
 
-main()
+if __name__ == '__main__':
+    main()

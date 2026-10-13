@@ -99,3 +99,10 @@ Never: train on eval_all demos; single-CSV smoke models for verdicts (overfit to
   BSP (52MB, from Brygada fastdl) + soup (32k tris) kept; gap-aware (3xDT) physics = future work, NOT silent. beta4b MGE
   (every-tick) remains the only training data. v34 download adventure (gamebanana API, skial/lazypurple fastdl, Anubis
   walls) archived in DIARY.
+- REAL SWEPT BOX 2026-10-13 (`ml/boxtrace.py` own slab code + `ml/build_brushes.py` sidecar + `ml/audit_brushes.py`,
+  NO pasted engine text): TF hulls read from leak (stand 24/24/82, duck /62, bottom at origin; ground = full-hull
+  trace origin→origin-2; same move order trace→clip→step→bump→ground). Parser phantoms found by demo-motion audit
+  (brushes swallowing free-motion positions 5hu+ deep): 31 dropped (giants 6436/6438/6440/6442/6444/6447/6448 + 24
+  small). Wall-gate with TRUE box: n=24, err med **1.7/2.1/3.3hu** @7/13/20, p90 3.7/5.6/9.9 (beats 9-ray 1.6/2.1/3.6
+  on p90); unstick nudges ~0 (3 win, max 0.5hu = STV rounding only). Replay-from-truth is engine-faithful; the
+  residual is the certificate, not a promise.
