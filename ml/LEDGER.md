@@ -84,6 +84,13 @@ Never: train on eval_all demos; single-CSV smoke models for verdicts (overfit to
   Gap to champ (97.7/87.2/61.2) still large, worst @13. Next: bigger model (d96/4L/30ep) on v2, then stride-1 + sweeper corpus.
 - VERDICT v3 2026-10-13 (d96/4L/4H/ff192, 30ep, same v2 eval): **82.5/46.8/26.6** (tacc .137, val .0607) vs v2 83.2/49.4/28.8.
   Bigger model does NOT win on 78k rows (better leaky-val, worse held-out hits; token-acc up, hits down — acc≠hits again).
+- VERDICT v4 2026-10-13 (d64/2L, 30ep, stride-1 corpus 150631 rows): **83.1/49.3/28.3** (s1 held-out 21k rows).
+  Doubling data: NO gain. Capacity + data both exhausted as levers.
+- COAST VERDICT (frozen inputs, same physics/flags): **86.5/59.5/34.8** (s1) and 86.3/59.7/34.9 (v2 set) — beats v1/v2/v3/v4
+  AND the binned oracle (84.9 @7) at EVERY horizon. Root cause: 25-bin quantization ceiling (22.5° octants, 2 speeds;
+  bin centers cannot reproduce true inputs; residual > frozen drift). Training NOT useless — target formulation is.
+  Next variant (building overnight): continuous future inputs (`ml/build_cont.py` → WC sidecars) → regression head
+  (wishdir xy + wishspeed float) instead of 25 bins. Morning: continuous trainer + ceiling-proof number.
   Bottleneck = DATA not capacity. v2 (d64/2L) stays champion. Next: orange corpus (BSP secured from Brygada fastdl via
   join 54.38.205.24:28045, soup 32k tris) + stride-1 → combined ~170k rows → retrain d64.
   NOTE loss scale: v1 1.49 vs v2/v3 0.078/0.061 NOT comparable (inverse-sqrt rebalance shrinks effective scale ~20x —
