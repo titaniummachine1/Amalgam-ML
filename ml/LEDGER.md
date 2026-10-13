@@ -74,3 +74,8 @@ Never: train on eval_all demos; single-CSV smoke models for verdicts (overfit to
 - Extractor repeats whole ROWS on ticks without updates (m2f~0.9 for duelists; ent 6 fully frozen). Naive dp/row overestimates speed by gap length (580hu/s phantoms, capped-everything). Liveness = pos OR eye OR flags changed; stale repeats DROPPED; v = dp/(gap*DT); pairs need gap==1. Standing-while-aiming survives via eye (true v=0). Single source: `movesim.load_csv_live` (validate/souptrace/dataset all use it — never reimplement).
 - Teleport cut is 80hu, NOT 300 (182hu spawn snaps leak through 300). Pipeline builders still use 300hu — tighten on next dataset build.
 - DT = 0.015 (66.67Hz), gravity 800, jump 289, accel/air 10, friction 4, stop 100, aircap 30.
+- Corpus v2 2026-10-13 (`~/Downloads/mge_ds/rollout_v2/`, same 107 CSVs, 4 workers): eye-liveness gate only change
+  (eye unique ≤2 over HIST+1 AND speed>100 → drop window). Result: 70 train files / 78217 rows + 6 eval / 10980 rows,
+  31 empty (verified pre-existing duds — zero v1-productive demos killed). Masks 9.5/8.4/61/21, none-token 12.8%.
+  `train_tx.py` rebalanced (inverse-sqrt class weights). v1 verdict: token-acc 0.132 held-out (none-collapse + frozen eye);
+  v2 target = beat v1 @7/13/20 (83.1/42.9/23.7).
