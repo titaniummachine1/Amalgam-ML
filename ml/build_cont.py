@@ -86,18 +86,18 @@ def main():
                     wd = np.asarray(wd, dtype=float).ravel()
                     raw[k, 0:2] = wd[:2]
                 raw[k, 2] = ws / 400.0
-            # INTENT DENOISE (2026-10-14): raw per-tick wishes are white noise
-            # (lag-1 cos 0.037 — STV jitter dominates 1-tick deltas). Humans
-            # actuate ~5Hz; boxcar ±2 ticks (75ms) kills 66Hz noise, keeps real
-            # strafes. Norm<0.25 after smoothing -> no input.
+            # RAW recovered inputs ONLY. Smoothing was tried and REJECTED:
+            # smoothed-oracle replay scored 52.5/18.5/12.3 vs coast 91.0/56.1/21.8
+            # — knowing the "denoised" future performed WORSE than no input at
+            # all, because a smoothed wish is not a valid input to the sim.
+            # Targets must be replayable (see parity gate in gate_replay.py).
             for k in range(FUT):
-                lo, hi = max(0, k - 2), min(FUT, k + 3)
-                m = raw[lo:hi].mean(axis=0)
-                n = float(np.linalg.norm(m[:2]))
-                if n < 0.25:
+                wd = raw[k, :2]
+                n = float(np.linalg.norm(wd))
+                if n < 1e-6:
                     continue
-                WC[gi, k, 0:2] = m[:2] / n
-                WC[gi, k, 2] = m[2]
+                WC[gi, k, 0:2] = wd / n
+                WC[gi, k, 2] = raw[k, 2]
         out = fp + '.cont.npz'
         tmp = out + '.tmp.npz'
         np.savez(tmp, WC=WC, MSK=MSK)
