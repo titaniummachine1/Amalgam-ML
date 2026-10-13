@@ -77,5 +77,8 @@ Never: train on eval_all demos; single-CSV smoke models for verdicts (overfit to
 - Corpus v2 2026-10-13 (`~/Downloads/mge_ds/rollout_v2/`, same 107 CSVs, 4 workers): eye-liveness gate only change
   (eye unique ≤2 over HIST+1 AND speed>100 → drop window). Result: 70 train files / 78217 rows + 6 eval / 10980 rows,
   31 empty (verified pre-existing duds — zero v1-productive demos killed). Masks 9.5/8.4/61/21, none-token 12.8%.
-  `train_tx.py` rebalanced (inverse-sqrt class weights). v1 verdict: token-acc 0.132 held-out (none-collapse + frozen eye);
-  v2 target = beat v1 @7/13/20 (83.1/42.9/23.7).
+   `train_tx.py` rebalanced (inverse-sqrt class weights). v1 verdict: token-acc 0.132 held-out (none-collapse + frozen eye);
+   v2 target = beat v1 @7/13/20 (83.1/42.9/23.7).
+- VERDICT v2 2026-10-13 (same v2 eval set, 10980 rows): tx_v1 82.9/42.8/23.6 (tacc .133) vs tx_v2 **83.2/49.4/28.8**
+  (tacc .124). Rebalance trades single-token acc for long-horizon hits (+6.6pp @13, +5.2pp @20) — REAL gain, not data artifact.
+  Gap to champ (97.7/87.2/61.2) still large, worst @13. Next: bigger model (d96/4L/30ep) on v2, then stride-1 + sweeper corpus.

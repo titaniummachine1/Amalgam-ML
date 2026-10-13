@@ -23,6 +23,7 @@ D = 64
 NL = 2
 NH = 4
 FF = 128
+# argv[4] "D,NL,NH,FF" overrides (e.g. 96,4,4,192 ~300k params, still <<5ms C++ int8).
 NVOC = 25
 HIST = 33
 FUT = 20
@@ -63,9 +64,13 @@ class TinyAR(nn.Module):
 
 
 def main():
+    global D, NL, NH, FF
     src = sys.argv[1]
     epochs = int(sys.argv[2]) if len(sys.argv) > 2 else 30
     out = sys.argv[3] if len(sys.argv) > 3 else 'tx_tiny.pt'
+    if len(sys.argv) > 4:
+        D, NL, NH, FF = (int(v) for v in sys.argv[4].split(','))
+    print('arch d=%d L=%d H=%d ff=%d' % (D, NL, NH, FF), flush=True)
     # src = one npz OR a .txt list of npz files (corpus training: concat).
     if src.endswith('.txt'):
         with open(src) as fh:

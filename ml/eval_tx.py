@@ -36,9 +36,14 @@ def bin_to_world(tok, eyedeg):
     return np.array([math.cos(ang), math.sin(ang)]), ws
 
 
+import train_tx
+
+
 def main():
     ckpt = torch.load(sys.argv[1], map_location='cpu', weights_only=False)
-    net = TinyAR()
+    if 'cfg' in ckpt:
+        train_tx.D, train_tx.NL, train_tx.NH, train_tx.FF = ckpt['cfg'][:4]
+    net = train_tx.TinyAR()
     net.load_state_dict(ckpt['net'])
     net.eval()
     torch.set_num_threads(4)
