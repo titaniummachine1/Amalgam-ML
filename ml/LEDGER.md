@@ -138,6 +138,44 @@ Never: train on eval_all demos; single-CSV smoke models for verdicts (overfit to
   ORACLE (`ml/oracle_tick.py`, true recovered inputs + swept-box collision, 12 wins):
   hit<24hu 100% at EVERY horizon; median 0.19/0.36/0.57/4.05/5.22/5.08/6.77hu at
   7/13/20/33/66/100/132 ticks. 1s=5.2hu, 2s=6.8hu. Tracer selftest PASS.
+- COLLISION EVAL HARNESS 2026-10-14 (`ml/eval_collision.py`): scores coast/oracle/model
+  in the REAL sim (swept box + ground trace), horizons 7/13/20/33/66/132.
+  CRITICAL BUG FOUND AND FIXED: the main loop passed POSITION as velocity
+  (`apply_dir(p, p, ...)`), so velocity became ~5600 units/tick and both
+  controllers produced identical garbage (0.0% everywhere). Single-tick tests
+  passed because they passed `v` correctly — a reminder to always test the
+  harness end-to-end, not just its pieces.
+  After the fix, on tfmge_2026-09-30__17-14 (60 windows):
+    oracle 100.0% at EVERY horizon, median 0.23/0.44/0.73/1.31/2.34/1.31hu
+    coast  100/100/0/0/0/0%, median 5.36/15.64/32.09/73.93/191.88/303.69hu
+  GATE PASS. On 2026-10-05__16-54 the gate also passes but oracle is weaker
+  (3.40hu @7, 14.3% @66) — window selection lands near spawns/rocket-jumps;
+  UNRESOLVED, do not quote demo A's numbers as universal.
+  Gate compares median error when hit-rates tie (coast is near-optimal at 7).
+- INPUT DECODER 2026-10-14 (`ml/recover_keys.py`, `ml/recover_viterbi.py`,
+  `ml/diag_candidates.py`): 9 yaw-relative candidates (8 + coast) through the
+  real physics. Source-verified fixes vs tf_gamemovement.cpp:1747/2070:
+  (a) diagonal wishspeed is 450*sqrt2 clamped after normalize, NOT min(450,max);
+  (b) CheckVelocity clamp then BACK-SPEED clamp, in that order; (c) the demo's
+  `mspd` column is unreliable (uniq 0/80/110/160/230/240/264/288) AND already
+  duck-adjusted — re-applying DUCK_FRAC quartered it and made friction brake
+  the player 240->70; maxspeed now comes from CLASS (verified: observed p95
+  speed per class == class speed exactly, 1->400 2->300 3->240 5->320 7->300).
+  Result: candidates now separate cleanly (best err 4.4 vs 9.6 for coast on a
+  saturated tick) but per-tick match is still ~8hu/s median vs a 0.67 floor,
+  99.6% of ticks fail. Cause NOT isolated: candidates demand wishspeed ~64 where
+  a held key gives 240-450. Ruled out: collision (0.34%), direction (87.5% within
+  10deg), class caps, duck scaling, clamp order. Remaining suspects: per-brush
+  m_surfaceFriction (BSP has NO LUMP_SURFACE — see ml/bsp_friction.py, so this
+  map's friction is unavailable), per-tick m_flMaxSpeed rewrites
+  (ChargeMove/StunMove/grapple/forward-pull), or STV positions being
+  interpolated rather than true physics state. DO NOT TRAIN ON DECODER OUTPUT.
+- CORRECTION 2026-10-14: the earlier "per-tick replay residual 0.0000 hu/s"
+  claim was WRONG — `inverse_ground` only assigns `info['res']` in its first
+  branch; the capped/boosted branches return early leaving it at its default
+  0.0, and 67% of ticks take those branches. Honest number: median 4.0 hu/s,
+  67% of ticks fail to reproduce. Never report a metric whose field may be
+  unset.
 - CORPUS POISON 2026-10-14 (`ml/build_rollout.py`, ALL corpora since v2): `inverse_ground`
   returns a 3-vector wishdir, `inverse_air` a 2-vector; history line `x[k,11:13] = wd`
   threw ValueError on EVERY grounded-moving tick → window dropped. Old corpora =
